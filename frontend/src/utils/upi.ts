@@ -7,7 +7,7 @@ import { UpilinkConfig } from '../types';
  */
 export function generateUpiString(config: UpilinkConfig): string {
   const { merchantVpa, merchantName, amount, orderNumber, note } = config;
-  const cleanVpa = (merchantVpa || '').trim();
+  const cleanVpa = (merchantVpa || '').trim().toLowerCase();
   // Sanitize merchant name: keep letters, numbers, spaces only to avoid special character rejection
   const safeMerchantName = (merchantName || 'Merchant Services').replace(/[^a-zA-Z0-9\s]/g, '').trim();
   const cleanName = encodeURIComponent(safeMerchantName || 'Merchant');
@@ -16,7 +16,7 @@ export function generateUpiString(config: UpilinkConfig): string {
   const cleanNote = encodeURIComponent(safeNote || 'Payment');
 
   // Clean NPCI Standard UPI Link
-  return `upi://pay?pa=${cleanVpa}&pn=${cleanName}&am=${cleanAmount}&cu=INR&tn=${cleanNote}`;
+  return `upi://pay?pa=${encodeURIComponent(cleanVpa)}&pn=${cleanName}&am=${cleanAmount}&cu=INR&tn=${cleanNote}`;
 }
 
 export interface AppDeeplinks {
@@ -48,7 +48,7 @@ export interface AppDeeplinks {
  */
 export function generateAppDeeplinks(config: UpilinkConfig): AppDeeplinks {
   const { merchantVpa, merchantName, amount, orderNumber, note } = config;
-  const cleanVpa = (merchantVpa || '').trim();
+  const cleanVpa = (merchantVpa || '').trim().toLowerCase();
   const safeMerchantName = (merchantName || 'Merchant').replace(/[^a-zA-Z0-9\s]/g, '').trim();
   const cleanName = encodeURIComponent(safeMerchantName || 'Merchant');
   const cleanAmount = Number(amount || 0).toFixed(2);
@@ -56,10 +56,10 @@ export function generateAppDeeplinks(config: UpilinkConfig): AppDeeplinks {
   const cleanNote = encodeURIComponent(safeNote || 'Payment');
   
   // Standard params (clean NPCI format)
-  const cleanParams = `pa=${cleanVpa}&pn=${cleanName}&am=${cleanAmount}&cu=INR&tn=${cleanNote}`;
+  const cleanParams = `pa=${encodeURIComponent(cleanVpa)}&pn=${cleanName}&am=${cleanAmount}&cu=INR&tn=${cleanNote}`;
   
   // Pure P2P params (minimal parameters: strictly pa, pn, am, cu)
-  const pureParams = `pa=${cleanVpa}&pn=${cleanName}&am=${cleanAmount}&cu=INR`;
+  const pureParams = `pa=${encodeURIComponent(cleanVpa)}&pn=${cleanName}&am=${cleanAmount}&cu=INR`;
 
   const universal = `upi://pay?${cleanParams}`;
   const pureUniversal = `upi://pay?${pureParams}`;
@@ -113,4 +113,3 @@ export function formatCurrency(amount: number): string {
     maximumFractionDigits: 2,
   }).format(amount);
 }
-

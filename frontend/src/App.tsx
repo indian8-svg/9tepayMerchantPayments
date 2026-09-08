@@ -11,6 +11,7 @@ import {
   QrCode,
   Link2,
   XCircle,
+  CheckCircle2,
   User as UserIcon,
   Settings,
   ChevronDown,
@@ -19,6 +20,8 @@ import {
   Check,
   Info,
   Mail,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { Order, MerchantProfile, WebhookLog, User, BankAccountQR, BankRoutingStrategy, SecurityEvent } from './types';
 import { safeFetch, fetchJson, api } from './utils/api';
@@ -82,6 +85,14 @@ const DEFAULT_PROFILE: MerchantProfile = {
 
 const DEFAULT_USER: User | null = null;
 
+interface PaymentNotification {
+  id: string;
+  orderNumber: string;
+  amount: number;
+  customerName?: string;
+  timestamp: string;
+}
+
 export function App() {
   const initialUrlOrderId = getOrderIdFromUrl();
 
@@ -131,7 +142,22 @@ export function App() {
   }, []);
 
   const [isNavDropdownOpen, setIsNavDropdownOpen] = useState(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('9tepay_theme') === 'dark';
+    } catch {
+      return false;
+    }
+  });
   const navDropdownRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('9tepay_theme', isDarkMode ? 'dark' : 'light');
+    } catch {
+      // Keep the selected theme for this session when storage is unavailable.
+    }
+  }, [isDarkMode]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -156,7 +182,7 @@ export function App() {
         return u.role === 'admin' ? 'admin' : 'dashboard';
       }
     } catch {}
-    return 'auth';
+    return 'about';
   });
 
   const [orders, setOrders] = useState<Order[]>(() => {
@@ -216,6 +242,38 @@ export function App() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isLoadingCheckout, setIsLoadingCheckout] = useState<boolean>(Boolean(initialUrlOrderId));
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [paymentNotification, setPaymentNotification] = useState<PaymentNotification | null>(null);
+  const paidOrderIdsRef = React.useRef(new Set<string>());
+  const hasLoadedPaidOrdersRef = React.useRef(false);
+  const lastNotificationKeyRef = React.useRef('');
+
+  const announcePayment = (order: Order, broadcast = true) => {
+    if (order.status !== 'PAID') return;
+    const id = order.id || order.orderNumber;
+    const notificationKey = `${id}:${order.paidAt || ''}`;
+    if (!id || lastNotificationKeyRef.current === notificationKey) return;
+    lastNotificationKeyRef.current = notificationKey;
+    paidOrderIdsRef.current.add(id);
+
+    const notification: PaymentNotification = {
+      id,
+      orderNumber: order.orderNumber || order.id,
+      amount: Number(order.amount) || 0,
+      customerName: order.customerName,
+      timestamp: order.paidAt || new Date().toISOString(),
+    };
+    setPaymentNotification(notification);
+    if (broadcast) {
+      try {
+        localStorage.setItem('9tepay_payment_notification', JSON.stringify(notification));
+      } catch {
+        // The in-memory notification remains available if storage is unavailable.
+      }
+    }
+    window.setTimeout(() => {
+      setPaymentNotification((current) => (current?.id === notification.id ? null : current));
+    }, 7000);
+  };
 
   // User-scoped data loader effect: when currentUser changes, load user's isolated profile, bank accounts, and orders
   useEffect(() => {
@@ -233,10 +291,10 @@ export function App() {
           vpa: currentUser.vpa || 'merchant@icici',
           phone: currentUser.phone || '+91 98765 43210',
           email: currentUser.email || 'merchant@9tepay.com',
-          apiKey: `pi_live_${uid}`,
-          apiSecret: `sk_live_${uid}`,
+          apiKey: '',
+          apiSecret: '',
           webhookUrl: 'https://shop.example.com/api/webhook/upi-callback',
-          webhookSecret: 'whsec_live_99a8b7c6d5e4f3a2',
+          webhookSecret: '',
           autoApproveUtr: true,
           settlementRate: 0.0,
           routingStrategy: 'smart_round_robin',
@@ -346,47 +404,28 @@ export function App() {
         safeFetch<SecurityEvent[]>('/api/security/events'),
       ]);
 
-      if (ordersRes.ok && Array.isArray(ordersRes.data) && ordersRes.data.length > 0) {
-        setOrders((prev) => {
-          const map = new Map<string, Order>();
-          prev.forEach((o) => map.set(o.id, o));
-
-          (ordersRes.data ?? []).forEach((o: Order) => {
-            // Check if existing item matches by ID or orderNumber
-            const existingKey = Array.from(map.keys()).find(
-              (k) => k === o.id || map.get(k)?.orderNumber === o.orderNumber
-            );
-            const existing = existingKey ? map.get(existingKey) : undefined;
-
-            if (existing) {
-              const merged: Order = {
-                ...existing,
-                ...o,
-                utrNumber: o.utrNumber || existing.utrNumber,
-                status: o.status === 'PAID' ? 'PAID' : existing.status === 'PAID' ? 'PAID' : o.status,
-                reviewRequired: o.reviewRequired ?? existing.reviewRequired,
-              };
-              if (existingKey && existingKey !== o.id) map.delete(existingKey);
-              map.set(o.id, merged);
-            } else {
-              map.set(o.id, o);
-            }
+      if (ordersRes.ok && Array.isArray(ordersRes.data)) {
+        // The authenticated API is authoritative; never carry orders across accounts.
+        const paidOrders = ordersRes.data.filter((order) => order.status === 'PAID');
+        if (!hasLoadedPaidOrdersRef.current) {
+          paidOrders.forEach((order) => paidOrderIdsRef.current.add(order.id || order.orderNumber));
+          hasLoadedPaidOrdersRef.current = true;
+        } else {
+          const newlyPaid = paidOrders.filter((order) => {
+            const id = order.id || order.orderNumber;
+            return id && !paidOrderIdsRef.current.has(id);
           });
-          const merged = Array.from(new Set(map.values()));
-          try { localStorage.setItem('9tepay_orders', JSON.stringify(merged)); } catch {}
-          return merged;
-        });
+          newlyPaid.forEach((order) => announcePayment(order));
+          paidOrders.forEach((order) => paidOrderIdsRef.current.add(order.id || order.orderNumber));
+        }
+        setOrders(ordersRes.data);
+        try { localStorage.setItem('9tepay_orders', JSON.stringify(ordersRes.data)); } catch {}
       }
 
-      if (banksRes.ok && Array.isArray(banksRes.data) && banksRes.data.length > 0) {
-        setBankAccounts((prev) => {
-          const map = new Map<string, BankAccountQR>();
-          prev.forEach((b) => map.set(b.id, b));
-          (banksRes.data ?? []).forEach((b: BankAccountQR) => map.set(b.id, b));
-          const merged = Array.from(map.values());
-          try { localStorage.setItem('9tepay_bank_accounts', JSON.stringify(merged)); } catch {}
-          return merged;
-        });
+      if (banksRes.ok && Array.isArray(banksRes.data)) {
+        // Bank accounts are also user-scoped and must be replaced, not merged.
+        setBankAccounts(banksRes.data);
+        try { localStorage.setItem('9tepay_bank_accounts', JSON.stringify(banksRes.data)); } catch {}
       }
 
       if (profileRes.ok && profileRes.data) {
@@ -401,15 +440,17 @@ export function App() {
         setSecurityEvents(secRes.data);
       }
 
-      if (authRes.ok) {
-        if (authRes.data?.user) {
-          setCurrentUser(authRes.data.user);
-        } else if (currentUser) {
-          // Keep server session active with logged-in merchant user
-          safeFetch('/api/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ emailOrPhone: currentUser.email, role: currentUser.role }),
-          }).catch(() => {});
+      if (authRes.ok && authRes.data?.user) {
+        setCurrentUser(authRes.data.user);
+      } else {
+        // Never keep a cached session when the server rejects its token.
+        setCurrentUser(null);
+        try {
+          localStorage.removeItem('9tepay_user');
+          localStorage.removeItem('9tepay_session_token');
+          sessionStorage.removeItem('9tepay_session_token');
+        } catch {
+          // Ignore storage cleanup failures.
         }
       }
     } catch (err) {
@@ -490,6 +531,17 @@ export function App() {
 
     const handleStorageChange = () => {
       try {
+        const notificationPayload = localStorage.getItem('9tepay_payment_notification');
+        if (notificationPayload) {
+          const notification = JSON.parse(notificationPayload) as PaymentNotification;
+          if (notification?.id && notification.id !== lastNotificationKeyRef.current) {
+            lastNotificationKeyRef.current = notification.id;
+            setPaymentNotification(notification);
+            window.setTimeout(() => {
+              setPaymentNotification((current) => (current?.id === notification.id ? null : current));
+            }, 7000);
+          }
+        }
         const storedStr = localStorage.getItem('9tepay_orders');
         if (storedStr) {
           const stored: Order[] = JSON.parse(storedStr);
@@ -516,11 +568,17 @@ export function App() {
 
     window.addEventListener('utr_submitted', handleUtrSubmitted);
     window.addEventListener('storage', handleStorageChange);
+    const handlePaymentApproved = (event: Event) => {
+      const detail = (event as CustomEvent<{ order?: Order }>).detail;
+      if (detail?.order) announcePayment(detail.order);
+    };
+    window.addEventListener('order_approved', handlePaymentApproved);
 
     return () => {
       clearInterval(pollInterval);
       window.removeEventListener('utr_submitted', handleUtrSubmitted);
       window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('order_approved', handlePaymentApproved);
     };
   }, []);
 
@@ -589,7 +647,16 @@ export function App() {
     }
   };
 
+  const handleLogoClick = () => {
+    setActiveView('about');
+    setIsNavDropdownOpen(false);
+    if (window.history && window.history.pushState && window.location.pathname !== '/') {
+      window.history.pushState(null, '', '/');
+    }
+  };
+
   const handlePaymentSuccess = async (updatedOrder: Order) => {
+    announcePayment(updatedOrder);
     setOrders((prev) => prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o)));
     setSelectedOrder(updatedOrder);
     
@@ -606,68 +673,12 @@ export function App() {
   };
 
   const handleCreateOrder = async (orderPayload: any): Promise<Order> => {
-    try {
-      const data = await api.post<{ success: boolean; order: Order; error?: string }>('/api/orders', orderPayload);
-      if (data.success && data.order) {
-        setOrders((prev) => [data.order, ...prev]);
-        return data.order;
-      }
-    } catch (err) {
-      console.warn('API create order failed, generating reliable local payment link', err);
+    const data = await api.post<{ success: boolean; order: Order; error?: string }>('/api/orders', orderPayload);
+    if (!data.success || !data.order) {
+      throw new Error(data.error || 'The payment server did not create the order.');
     }
-
-    const numAmount = Number(orderPayload.amount) || 100;
-    const finalOrderNumber = orderPayload.orderId?.trim() || `PL-${Math.floor(1000 + Math.random() * 9000)}`;
-    const finalCustomerName = orderPayload.customerName?.trim() || "Guest Customer";
-    const finalNote = orderPayload.note?.trim() || `Payment for ${finalOrderNumber}`;
-    const orderUniqueId = `ord_live_${Math.random().toString(36).substring(2, 9)}`;
-
-    // Target bank VPA selection
-    let targetVpa = profile.vpa || "merchant.settle@hdfcbank";
-    let targetBankName = "Settlement Bank";
-    let targetQrImage: string | undefined = undefined;
-
-    if (orderPayload.bankAccountId) {
-      const b = bankAccounts.find((x) => x.id === orderPayload.bankAccountId);
-      if (b) {
-        targetVpa = b.vpa;
-        targetBankName = b.bankName;
-        targetQrImage = b.customQrImage;
-      }
-    } else if (bankAccounts.length > 0) {
-      const primary = bankAccounts.find((b) => b.isPrimary) || bankAccounts[0];
-      targetVpa = primary.vpa;
-      targetBankName = primary.bankName;
-      targetQrImage = primary.customQrImage;
-    }
-
-    const safeName = (profile.businessName || 'Merchant Services').replace(/[^a-zA-Z0-9\s]/g, '').trim();
-    const upiUri = `upi://pay?pa=${targetVpa.trim()}&pn=${encodeURIComponent(safeName || 'Merchant')}&am=${numAmount.toFixed(2)}&cu=INR&tn=${encodeURIComponent(finalNote.replace(/[^a-zA-Z0-9\s]/g, '').trim() || 'Payment')}`;
-
-    const fallbackOrder: Order = {
-      id: orderUniqueId,
-      orderNumber: finalOrderNumber,
-      amount: numAmount,
-      currency: "INR",
-      customerName: finalCustomerName,
-      customerEmail: orderPayload.customerEmail,
-      customerPhone: orderPayload.customerPhone,
-      note: finalNote,
-      merchantVpa: targetVpa,
-      merchantName: profile.businessName || "Merchant Services",
-      bankAccountId: orderPayload.bankAccountId,
-      bankName: targetBankName,
-      customQrImage: targetQrImage,
-      status: "PENDING",
-      upiString: upiUri,
-      createdAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 1000 * 60 * 15).toISOString(),
-      callbackUrl: orderPayload.callbackUrl || "https://shop.example.com/order/success",
-      webhookDelivered: false,
-    };
-
-    setOrders((prev) => [fallbackOrder, ...prev]);
-    return fallbackOrder;
+    setOrders((prev) => [data.order, ...prev]);
+    return data.order;
   };
 
   const handleCancelOrder = async (orderIdToCancel: string) => {
@@ -687,21 +698,10 @@ export function App() {
         `/api/orders/${orderIdToApprove}/approve`,
         {}
       );
-      const approvedOrder: Order = data.order || {
-        id: orderIdToApprove,
-        orderNumber: orderIdToApprove,
-        amount: 1.0,
-        currency: 'INR',
-        customerName: 'Customer',
-        merchantVpa: profile.vpa,
-        merchantName: profile.businessName,
-        status: 'PAID',
-        paidAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-        reviewRequired: false,
-        upiString: '',
-        createdAt: new Date().toISOString(),
-      };
+      if (!data.success || !data.order) {
+        throw new Error(data.error || 'The server did not approve this transaction.');
+      }
+      const approvedOrder = data.order;
 
       setOrders((prev) =>
         prev.map((o) =>
@@ -748,31 +748,8 @@ export function App() {
 
       refreshAll();
     } catch (err) {
-      console.warn('Approve order fallback to local update', err);
-      const fallbackOrder = {
-        id: orderIdToApprove,
-        status: 'PAID' as const,
-        paidAt: new Date().toISOString(),
-        reviewRequired: false,
-      };
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.id === orderIdToApprove || o.orderNumber === orderIdToApprove
-            ? { ...o, status: 'PAID' as const, paidAt: new Date().toISOString(), reviewRequired: false }
-            : o
-        )
-      );
-      setSelectedOrder((prev) =>
-        prev && (prev.id === orderIdToApprove || prev.orderNumber === orderIdToApprove)
-          ? { ...prev, status: 'PAID' as const, paidAt: new Date().toISOString(), reviewRequired: false }
-          : prev
-      );
-      window.dispatchEvent(
-        new CustomEvent('order_approved', {
-          detail: { orderId: orderIdToApprove, order: fallbackOrder },
-        })
-      );
-      window.dispatchEvent(new Event('storage'));
+      console.error('Failed to approve order', err);
+      throw err;
     }
   };
 
@@ -1044,49 +1021,18 @@ export function App() {
         phone: user.phone || prev.phone,
       }));
 
-      // if (user.vpa) {
-      //   setBankAccounts((prev) => {
-      //     const exists = prev.some((b) => b.vpa.toLowerCase() === user.vpa.toLowerCase());
-      //     if (exists) return prev;
-      //     const newAccount: BankAccountQR = {
-      //       id: `bank_${Math.random().toString(36).substring(2, 7)}`,
-      //       bankName: 'Direct Settlement Bank',
-      //       accountHolder: user.businessName || 'Merchant Account',
-      //       accountNumber: '919000000000',
-      //       ifsc: 'ICIC0000102',
-      //       vpa: user.vpa,
-      //       qrTitle: `${user.businessName} Instant Settlement QR`,
-      //       qrType: 'dynamic_intent',
-      //       qrColor: '#10b981',
-      //       isPrimary: true,
-      //       isActive: true,
-      //       dailyLimit: 500000,
-      //       dailyVolume: 0,
-      //       totalSettled: 0,
-      //       routingWeight: 5,
-      //       createdAt: new Date().toISOString(),
-      //     };
-      //     return [newAccount, ...prev.map((b) => ({ ...b, isPrimary: false }))];
-      //   });
-      // }
-
       if (user.vpa) {
-    const vpa = user.vpa;
-
-    setBankAccounts((prev) => {
-        const exists = prev.some(
-            (b) => b.vpa.toLowerCase() === vpa.toLowerCase()
-        );
-
-        if (exists) return prev;
-
-        const newAccount: BankAccountQR = {
+        const userVpa = user.vpa;
+        setBankAccounts((prev) => {
+          const exists = prev.some((b) => b.vpa.toLowerCase() === userVpa.toLowerCase());
+          if (exists) return prev;
+          const newAccount: BankAccountQR = {
             id: `bank_${Math.random().toString(36).substring(2, 7)}`,
             bankName: 'Direct Settlement Bank',
             accountHolder: user.businessName || 'Merchant Account',
             accountNumber: '919000000000',
             ifsc: 'ICIC0000102',
-            vpa: vpa,
+            vpa: userVpa,
             qrTitle: `${user.businessName} Instant Settlement QR`,
             qrType: 'dynamic_intent',
             qrColor: '#10b981',
@@ -1097,14 +1043,10 @@ export function App() {
             totalSettled: 0,
             routingWeight: 5,
             createdAt: new Date().toISOString(),
-        };
-
-        return [
-            newAccount,
-            ...prev.map((b) => ({ ...b, isPrimary: false }))
-        ];
-    });
-}
+          };
+          return [newAccount, ...prev.map((b) => ({ ...b, isPrimary: false }))];
+        });
+      }
     }
 
     try {
@@ -1121,6 +1063,7 @@ export function App() {
   };
 
   const handleLogout = async () => {
+    if (!window.confirm('Are you sure you want to log out of 9tepay?')) return;
     try {
       localStorage.removeItem('9tepay_user');
       localStorage.removeItem('9tepay_session_token');
@@ -1130,21 +1073,53 @@ export function App() {
       // ignore
     }
     setCurrentUser(null);
-    setActiveView('auth');
+    setActiveView('about');
   };
 
   // Safe view resolution based on authentication state
   const isPublicCheckout = activeView === 'checkout';
-  const effectiveView = !currentUser && !isPublicCheckout ? 'auth' : activeView;
+  const publicViews = new Set(['about', 'contact', 'auth']);
+  const effectiveView = !currentUser && !isPublicCheckout && !publicViews.has(activeView) ? 'about' : activeView;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-blue-600 selection:text-white">
+    <div className={`${isDarkMode ? 'dark-mode' : ''} razorpay-shell min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-blue-600 selection:text-white`}>
+      {paymentNotification && (
+        <div className="payment-notification" role="status" aria-live="polite">
+          <div className="payment-notification__icon">
+            <CheckCircle2 className="w-5 h-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="payment-notification__title">Payment received</p>
+            <p className="payment-notification__details">
+              ₹{paymentNotification.amount.toLocaleString('en-IN')} · {paymentNotification.orderNumber}
+            </p>
+            {paymentNotification.customerName && (
+              <p className="payment-notification__customer">{paymentNotification.customerName}</p>
+            )}
+          </div>
+          <button
+            type="button"
+            className="payment-notification__close"
+            aria-label="Dismiss payment notification"
+            onClick={() => setPaymentNotification(null)}
+          >
+            <XCircle className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       {/* Top Header Navbar - Hidden in Standalone Checkout Mode */}
       {effectiveView !== 'checkout' && (
         <header className="border-b border-slate-200/90 bg-white/95 backdrop-blur-md sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Logo size="md" showSubtitle={true} />
+            <button
+              type="button"
+              onClick={handleLogoClick}
+              className="rounded-lg cursor-pointer transition-opacity hover:opacity-80"
+              aria-label="Go to 9tepay home page"
+            >
+              <Logo size="md" showSubtitle={true} />
+            </button>
             <span className="text-[10px] uppercase font-bold tracking-wider px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 hidden lg:inline-block ml-1">
               NPCI Deeplink Intent
             </span>
@@ -1152,6 +1127,15 @@ export function App() {
 
           {/* Navigation Bar Dropdown & User Controls */}
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsDarkMode((previous) => !previous)}
+              className="inline-flex items-center justify-center w-9 h-9 rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-colors cursor-pointer"
+              aria-label={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={isDarkMode ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
             {currentUser ? (
               <div className="flex items-center gap-2">
                 {/* Header Menu Dropdown */}
@@ -1419,12 +1403,21 @@ export function App() {
                   <span className={`w-2 h-2 rounded-full ${currentUser.role === 'admin' ? 'bg-indigo-500' : 'bg-emerald-500'} animate-pulse`}></span>
                   <span className="font-semibold text-slate-800 truncate max-w-[120px]">{typeof currentUser.name === "string" ? currentUser.name : "User"}</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-rose-200 bg-white text-rose-700 hover:bg-rose-50 text-xs font-bold transition-colors cursor-pointer"
+                  aria-label="Log out of 9tepay"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Log out</span>
+                </button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 text-xs font-semibold">
+              <div className="flex flex-wrap items-center justify-end gap-1 text-xs font-semibold">
                 <button
                   onClick={() => handleViewChange('about')}
-                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  className={`px-2.5 py-1.5 rounded-xl transition-all cursor-pointer ${
                     activeView === 'about'
                       ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -1434,7 +1427,7 @@ export function App() {
                 </button>
                 <button
                   onClick={() => handleViewChange('contact')}
-                  className={`px-3 py-1.5 rounded-xl transition-all cursor-pointer ${
+                  className={`px-2.5 py-1.5 rounded-xl transition-all cursor-pointer ${
                     activeView === 'contact'
                       ? 'bg-blue-50 text-blue-700 font-bold border border-blue-200/80'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -1444,10 +1437,10 @@ export function App() {
                 </button>
                 <button
                   onClick={() => handleViewChange('auth')}
-                  className="px-3.5 py-1.5 rounded-xl font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs flex items-center gap-1.5 transition-all cursor-pointer ml-1"
+                  className="px-3 py-1.5 rounded-xl font-bold bg-blue-600 hover:bg-blue-700 text-white shadow-xs flex items-center gap-1.5 transition-all cursor-pointer ml-1"
                 >
                   <Lock className="w-3.5 h-3.5" />
-                  <span>Merchant Login</span>
+                  <span>Login</span>
                 </button>
               </div>
             )}
@@ -1651,48 +1644,59 @@ export function App() {
         )}
       </main>
 
-      {/* Bottom Footer - Hidden in Standalone Checkout Mode */}
+      {/* Product footer - Hidden in Standalone Checkout Mode */}
       {effectiveView !== 'checkout' && (
-        <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500 shadow-2xs">
-          <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <Logo size="sm" showSubtitle={false} />
-              <span className="text-slate-300">|</span>
-              <span className="font-medium text-blue-700">Zero-Gateway-Fee Enterprise UPI Engine</span>
+        <footer className="border-t border-slate-200 bg-white text-slate-600">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 sm:py-14">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-[1.4fr_1fr_1fr_1fr] gap-9 lg:gap-12">
+              <div className="space-y-4 max-w-sm">
+                <Logo size="md" showSubtitle={false} />
+                <p className="text-sm leading-6">
+                  A practical UPI payment workspace for creating payment links, sharing QR codes,
+                  tracking settlements, and reviewing payment references securely.
+                </p>
+                <div className="flex flex-wrap gap-2 text-[11px] font-semibold">
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">Secure checkout</span>
+                  <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5">UPI ready</span>
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 mb-4">Payments</h2>
+                <div className="flex flex-col items-start gap-2 text-sm">
+                  <button onClick={() => handleViewChange('about')} className="hover:text-blue-600 cursor-pointer transition-colors">Payment Links</button>
+                  <button onClick={() => handleViewChange('about')} className="hover:text-blue-600 cursor-pointer transition-colors">QR Checkout</button>
+                  <button onClick={() => handleViewChange('about')} className="hover:text-blue-600 cursor-pointer transition-colors">UPI Intents</button>
+                  <button onClick={() => handleViewChange('about')} className="hover:text-blue-600 cursor-pointer transition-colors">Payment Review</button>
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 mb-4">Developers</h2>
+                <div className="flex flex-col items-start gap-2 text-sm">
+                  <button onClick={() => handleViewChange(currentUser ? 'docs' : 'about')} className="hover:text-blue-600 cursor-pointer transition-colors">API Documentation</button>
+                  <button onClick={() => handleViewChange(currentUser ? 'docs' : 'about')} className="hover:text-blue-600 cursor-pointer transition-colors">Webhooks</button>
+                  <button onClick={() => handleViewChange('contact')} className="hover:text-blue-600 cursor-pointer transition-colors">Integration Support</button>
+                </div>
+              </div>
+
+              <div>
+                <h2 className="text-xs font-bold uppercase tracking-wider text-slate-900 mb-4">Company</h2>
+                <div className="flex flex-col items-start gap-2 text-sm">
+                  <button onClick={() => handleViewChange('about')} className="hover:text-blue-600 cursor-pointer transition-colors">About 9tepay</button>
+                  <button onClick={() => handleViewChange('contact')} className="hover:text-blue-600 cursor-pointer transition-colors">Contact Us</button>
+                  <button onClick={() => handleViewChange('auth')} className="hover:text-blue-600 cursor-pointer transition-colors">Merchant Login</button>
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center gap-3 text-xs font-semibold text-slate-600">
-              <button
-                onClick={() => handleViewChange('about')}
-                className="hover:text-blue-600 cursor-pointer transition-colors"
-              >
-                About Us
-              </button>
-              <span className="text-slate-300">•</span>
-              <button
-                onClick={() => handleViewChange('contact')}
-                className="hover:text-blue-600 cursor-pointer transition-colors"
-              >
-                Contact Us
-              </button>
-              <span className="text-slate-300">•</span>
-              <button
-                onClick={() => handleViewChange(currentUser ? 'docs' : 'auth')}
-                className="hover:text-blue-600 cursor-pointer transition-colors"
-              >
-                API Docs
-              </button>
-            </div>
-
-            <div className="text-[11px] text-slate-500 flex items-center gap-3 font-sans">
-              {currentUser ? (
-                <>
-                  <span>Account: <strong className="text-slate-800">{typeof currentUser?.businessName === "string" ? currentUser.businessName : typeof currentUser?.name === "string" ? currentUser.name : "User"}</strong></span>
-                  <span>Role: <strong className="text-blue-700 uppercase font-bold">{typeof currentUser?.role === "string" ? currentUser.role : "User"}</strong></span>
-                </>
-              ) : (
-                <span>Session: <strong className="text-slate-600">Signed Out</strong></span>
-              )}
+            <div className="mt-10 pt-5 border-t border-slate-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 text-xs">
+              <p>© {new Date().getFullYear()} 9tepay. Built for clearer digital payments.</p>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 font-semibold">
+                <span className="inline-flex items-center gap-1.5"><Shield className="w-3.5 h-3.5" /> Security-first review</span>
+                <button onClick={() => handleViewChange('contact')} className="hover:text-blue-600 cursor-pointer transition-colors">Support</button>
+                <span className="text-slate-400">India</span>
+              </div>
             </div>
           </div>
         </footer>

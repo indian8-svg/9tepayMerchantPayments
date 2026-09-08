@@ -83,8 +83,8 @@ export const OverviewCard: React.FC<OverviewCardProps> = ({ data }) => {
               <div className="text-sm font-bold text-slate-900 mt-0.5">Hostinger hCDN</div>
             </div>
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 col-span-2 sm:col-span-1">
-              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Session Token</div>
-              <div className="text-sm font-bold text-amber-800 font-mono mt-0.5">payindia_session</div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">Session Security</div>
+              <div className="text-sm font-bold text-emerald-700 mt-0.5">Protected &amp; expiring</div>
             </div>
           </div>
         </div>

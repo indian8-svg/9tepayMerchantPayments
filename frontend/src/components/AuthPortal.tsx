@@ -35,6 +35,14 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
+  const [verificationEmail, setVerificationEmail] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorChallenge, setTwoFactorChallenge] = useState('');
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [resetToken, setResetToken] = useState(() => new URLSearchParams(window.location.search).get('resetToken') || '');
+  const [resetPassword, setResetPassword] = useState('');
+  const [resetPasswordConfirm, setResetPasswordConfirm] = useState('');
 
   // Register fields
   const [regBusinessName, setRegBusinessName] = useState('');
@@ -45,6 +53,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
   const [regBankAccount, setRegBankAccount] = useState('');
   const [regIfsc, setRegIfsc] = useState('');
   const [regPassword, setRegPassword] = useState('');
+  const [termsAccepted, setTermsAccepted] = useState(false);
 
   // Remember me and Admin credentials
   const [rememberMe, setRememberMe] = useState(false);
@@ -73,8 +82,62 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     } catch {}
   };
 
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const res = await safeFetch<{ success: boolean; message?: string; error?: string; developmentResetToken?: string }>(
+        '/api/auth/forgot-password',
+        { method: 'POST', body: JSON.stringify({ email: emailOrPhone.trim() }) }
+      );
+      if (!res.ok || !res.data?.success) throw new Error(res.data?.error || res.error || 'Unable to send reset instructions.');
+      const token = res.data.developmentResetToken || resetToken;
+      if (res.data.developmentResetToken) setResetToken(res.data.developmentResetToken);
+      setSuccessMsg(
+        token
+          ? `Development reset token generated. Enter a new password below.`
+          : 'If an account exists for this email, reset instructions have been sent. Check your inbox and follow the secure link.'
+      );
+    } catch (error: any) {
+      setErrorMsg(formatErrorMessage(error, 'Unable to send password reset instructions.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (resetPassword.length < 8 || resetPassword !== resetPasswordConfirm) {
+      setErrorMsg(resetPassword.length < 8 ? 'New password must be at least 8 characters long.' : 'Passwords do not match.');
+      return;
+    }
+    setIsLoading(true);
+    setErrorMsg('');
+    try {
+      const res = await safeFetch<{ success: boolean; message?: string; error?: string }>(
+        '/api/auth/reset-password',
+        { method: 'POST', body: JSON.stringify({ token: resetToken, newPassword: resetPassword }) }
+      );
+      if (!res.ok || !res.data?.success) throw new Error(res.data?.error || res.error || 'Unable to reset password.');
+      setResetToken('');
+      setResetPassword('');
+      setResetPasswordConfirm('');
+      setShowForgotPassword(false);
+      setSuccessMsg('Password reset successfully. Sign in with your new password.');
+      window.history.replaceState(null, '', window.location.pathname);
+    } catch (error: any) {
+      setErrorMsg(formatErrorMessage(error, 'Unable to reset password.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLogin = async (e?: React.FormEvent, customCredentials?: { email: string; passcode?: string; role?: 'merchant' | 'admin' }) => {
     if (e) e.preventDefault();
+    const loginConfirmed = window.confirm('Are you sure you want to sign in to 9tepay?');
+    if (!loginConfirmed) return;
     setIsLoading(true);
     setErrorMsg('');
     setSuccessMsg('');
@@ -84,7 +147,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         ? { emailOrPhone: customCredentials.email, password: customCredentials.passcode || '', role: customCredentials.role }
         : { emailOrPhone, password, role: authMode === 'admin' ? 'admin' : 'merchant' };
 
-      const res = await safeFetch<{ success: boolean; user: User; token?: string; error?: string }>(
+      const res = await safeFetch<{ success: boolean; user?: User; token?: string; error?: string; message?: string; email?: string; emailVerificationRequired?: boolean; developmentVerificationCode?: string; requiresTwoFactor?: boolean; challengeToken?: string }>(
         '/api/auth/login',
         {
           method: 'POST',
@@ -106,11 +169,26 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         return;
       }
 
+      if (res.data?.emailVerificationRequired) {
+        setVerificationEmail(res.data.email || emailOrPhone);
+        setSuccessMsg(
+          res.data.developmentVerificationCode
+            ? `Development verification code: ${res.data.developmentVerificationCode}`
+            : res.data.message || 'Check your email for a verification code.'
+        );
+        return;
+      }
+      if (res.data?.requiresTwoFactor && res.data.challengeToken) {
+        setTwoFactorChallenge(res.data.challengeToken);
+        setSuccessMsg('Enter the 6-digit code from your authenticator app.');
+        return;
+      }
+
       const rawErr = res.data?.error || res.error;
       const errorText = formatErrorMessage(rawErr, "Invalid email/phone or passcode. Please verify your credentials.");
       setErrorMsg(errorText);
     } catch (err: any) {
-      setErrorMsg(formatErrorMessage(err, 'Login failed. Please check your network connection and try again.'));
+      setErrorMsg(formatErrorMessage(err, 'Unable to reach the 9tepay server. Start the app server and try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -122,6 +200,10 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       setErrorMsg('Please fill in business name, email, password, and UPI VPA.');
       return;
     }
+    if (!termsAccepted) {
+      setErrorMsg('Please review and agree to the Terms and Conditions before registering.');
+      return;
+    }
 
     if (!regVpa.includes('@')) {
       setErrorMsg('Invalid UPI VPA format. Must be like name@bank (e.g. store@icici)');
@@ -131,7 +213,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     setIsLoading(true);
     setErrorMsg('');
     try {
-      const res = await safeFetch<{ success: boolean; user: User; token?: string; error?: string }>(
+      const res = await safeFetch<{ success: boolean; user?: User; token?: string; error?: string; message?: string; email?: string; emailVerificationRequired?: boolean; developmentVerificationCode?: string }>(
         '/api/auth/register',
         {
           method: 'POST',
@@ -144,6 +226,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
             password: regPassword,
             bankAccount: regBankAccount,
             ifsc: regIfsc,
+            termsAccepted,
           }),
         }
       );
@@ -162,6 +245,16 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         return;
       }
 
+      if (res.data?.emailVerificationRequired) {
+        setVerificationEmail(res.data.email || regEmail);
+        setSuccessMsg(
+          res.data.developmentVerificationCode
+            ? `Development verification code: ${res.data.developmentVerificationCode}`
+            : res.data.message || 'Check your email for a verification code.'
+        );
+        return;
+      }
+
       const rawRegErr = res.data?.error || res.error;
       const regErrorText = formatErrorMessage(rawRegErr, "Registration failed. Please verify the submitted details.");
       setErrorMsg(regErrorText);
@@ -172,29 +265,76 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     }
   };
 
+  const handleEmailVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMsg('');
+    try {
+      const res = await safeFetch<{ success: boolean; user: User; token?: string; error?: string }>('/api/auth/verify-email', {
+        method: 'POST',
+        body: JSON.stringify({ email: verificationEmail, code: verificationCode }),
+      });
+      if (res.ok && res.data?.success && res.data.user && res.data.token) {
+        sessionStorage.setItem('9tepay_session_token', res.data.token);
+        saveRegisteredUserToLocalMap(res.data.user);
+        onLoginSuccess(res.data.user);
+      } else {
+        setErrorMsg(formatErrorMessage(res.data?.error || res.error, 'Verification failed.'));
+      }
+    } catch (err: any) {
+      setErrorMsg(formatErrorMessage(err, 'Verification failed. Please try again.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleTwoFactorVerification = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMsg('');
+    try {
+      const res = await safeFetch<{ success: boolean; user: User; token?: string; error?: string }>('/api/auth/2fa/verify', {
+        method: 'POST',
+        body: JSON.stringify({ challengeToken: twoFactorChallenge, code: twoFactorCode }),
+      });
+      if (res.ok && res.data?.success && res.data.user && res.data.token) {
+        sessionStorage.setItem('9tepay_session_token', res.data.token);
+        saveRegisteredUserToLocalMap(res.data.user);
+        onLoginSuccess(res.data.user);
+      } else {
+        setErrorMsg(formatErrorMessage(res.data?.error || res.error, 'Two-factor verification failed.'));
+      }
+    } catch (err: any) {
+      setErrorMsg(formatErrorMessage(err, 'Two-factor verification failed. Please try again.'));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
+    <div className="max-w-4xl mx-auto space-y-5">
       {/* Top Banner */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-6 shadow-sm relative overflow-hidden">
+      <div className={`${authMode === 'admin' ? 'bg-slate-950 border-slate-800 text-white' : 'bg-white border-slate-200'} border rounded-2xl p-5 sm:p-6 shadow-sm relative overflow-hidden`}>
+        {authMode === 'admin' && <div className="absolute -right-16 -top-20 w-64 h-64 rounded-full bg-blue-600/20 blur-3xl" />}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <div className="mb-3">
-              <Logo size="lg" showSubtitle={true} />
+          <div className="relative">
+            <div className="mb-2">
+              <Logo size="lg" showSubtitle={false} />
             </div>
             <div className="flex items-center gap-2 mt-1">
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 font-sans">
-                Enterprise Merchant Portal
+              <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold border font-sans ${authMode === 'admin' ? 'bg-blue-500/15 text-blue-200 border-blue-400/30' : 'bg-blue-50 text-blue-700 border-blue-200'}`}>
+                {authMode === 'admin' ? 'Privileged Operations Access' : 'Enterprise Merchant Portal'}
               </span>
-              <span className="text-xs text-slate-500 font-sans">
-                Direct Settlement &amp; API Controls
+              <span className={`text-xs font-sans ${authMode === 'admin' ? 'text-slate-400' : 'text-slate-500'}`}>
+                {authMode === 'admin' ? 'Protected command center' : 'Direct Settlement &amp; API Controls'}
               </span>
             </div>
-            <h2 className="text-xl font-bold text-slate-900 mt-2 flex items-center gap-2">
-              <Lock className="w-5 h-5 text-blue-600" />
-              <span>Merchant &amp; Admin Sign In</span>
+            <h2 className={`text-lg font-bold mt-2 flex items-center gap-2 ${authMode === 'admin' ? 'text-white' : 'text-slate-900'}`}>
+              {authMode === 'admin' ? <Shield className="w-5 h-5 text-blue-300" /> : <Lock className="w-5 h-5 text-blue-600" />}
+              <span>{authMode === 'admin' ? 'Enter the 9tepay Command Center' : 'Merchant &amp; Admin Sign In'}</span>
             </h2>
-            <p className="text-xs text-slate-600 mt-1 max-w-2xl">
-              Sign in to manage your settlement bank accounts, generate instant UPI QR payment links, and monitor live payment webhooks.
+            <p className={`text-xs mt-1 max-w-2xl ${authMode === 'admin' ? 'text-slate-400' : 'text-slate-500'}`}>
+              {authMode === 'admin' ? 'A single control room for merchant governance, payment approvals, reconciliation, and platform health.' : 'Manage payments, settlements, and API integrations from one place.'}
             </p>
           </div>
 
@@ -221,12 +361,12 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
       {/* Main Authentication Box */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
         {/* Left Form Card */}
-        <div className="md:col-span-7 bg-white border border-slate-200/90 rounded-2xl p-6 sm:p-7 shadow-sm">
+        <div className={`${authMode === 'admin' ? 'border-blue-200 shadow-blue-100/40' : 'border-slate-200'} md:col-span-7 bg-white border rounded-2xl p-5 sm:p-7 shadow-sm`}>
           {/* Mode Switcher */}
-          <div className="flex items-center gap-2 border-b border-slate-100 pb-4 mb-6">
+          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-4 mb-6">
             <button
               onClick={() => { setAuthMode('login'); setErrorMsg(''); }}
-              className={`flex-1 py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 min-w-[130px] py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 authMode === 'login'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
@@ -238,7 +378,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
             <button
               onClick={() => { setAuthMode('register'); setErrorMsg(''); }}
-              className={`flex-1 py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 min-w-[110px] py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 authMode === 'register'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
@@ -250,7 +390,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
             <button
               onClick={() => { setAuthMode('admin'); setErrorMsg(''); }}
-              className={`py-2.5 px-3.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              className={`flex-1 min-w-[90px] py-2.5 px-3.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 authMode === 'admin'
                   ? 'bg-slate-900 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
@@ -277,13 +417,62 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
             </div>
           )}
 
+          {verificationEmail && (
+            <form onSubmit={handleEmailVerification} className="space-y-4">
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl">
+                <div className="font-semibold text-blue-900 text-sm">Verify your email address</div>
+                <div className="text-xs text-blue-700 mt-1">We sent a 6-digit code to {verificationEmail}.</div>
+              </div>
+              <input type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={verificationCode} onChange={(e) => setVerificationCode(e.target.value)} required placeholder="Enter verification code" className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 text-sm rounded-xl px-4 py-3 tracking-[0.35em] text-center focus:outline-none focus:border-blue-500" />
+              <button type="submit" disabled={isLoading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-3 rounded-xl disabled:opacity-50">Verify email</button>
+              <button type="button" onClick={() => { setVerificationEmail(''); setVerificationCode(''); setSuccessMsg(''); }} className="w-full text-xs text-slate-500 hover:text-blue-600">Back to sign in</button>
+            </form>
+          )}
+
+          {twoFactorChallenge && !verificationEmail && (
+            <form onSubmit={handleTwoFactorVerification} className="space-y-4">
+              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                <div className="font-semibold text-emerald-900 text-sm flex items-center gap-2"><Shield className="w-4 h-4" />Authenticator verification</div>
+                <div className="text-xs text-emerald-700 mt-1">Open your authenticator app and enter the current 6-digit code.</div>
+              </div>
+              <input type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={twoFactorCode} onChange={(e) => setTwoFactorCode(e.target.value)} required placeholder="000000" className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 text-lg rounded-xl px-4 py-3 tracking-[0.5em] text-center focus:outline-none focus:border-blue-500" />
+              <button type="submit" disabled={isLoading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-3 rounded-xl disabled:opacity-50">Verify and sign in</button>
+              <button type="button" onClick={() => { setTwoFactorChallenge(''); setTwoFactorCode(''); setSuccessMsg(''); }} className="w-full text-xs text-slate-500 hover:text-blue-600">Back to sign in</button>
+            </form>
+          )}
+
+          {showForgotPassword && !verificationEmail && !twoFactorChallenge && !resetToken && (
+            <form onSubmit={handleForgotPassword} className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Reset your password</h3>
+                <p className="text-xs text-slate-500 mt-1">Enter your account email. We’ll send instructions to create a new password.</p>
+              </div>
+              <input type="email" value={emailOrPhone} onChange={(e) => setEmailOrPhone(e.target.value)} required placeholder="you@example.com" className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 text-sm rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500" />
+              <button type="submit" disabled={isLoading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-3 rounded-xl disabled:opacity-50">Send reset instructions</button>
+              <button type="button" onClick={() => setShowForgotPassword(false)} className="w-full text-xs text-slate-500 hover:text-blue-600">Back to sign in</button>
+            </form>
+          )}
+
+          {resetToken && !verificationEmail && !twoFactorChallenge && (
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Choose a new password</h3>
+                <p className="text-xs text-slate-500 mt-1">Use at least 8 characters. This reset link can only be used once.</p>
+              </div>
+              <input type="password" value={resetPassword} onChange={(e) => setResetPassword(e.target.value)} required minLength={8} placeholder="New password" className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 text-sm rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500" />
+              <input type="password" value={resetPasswordConfirm} onChange={(e) => setResetPasswordConfirm(e.target.value)} required minLength={8} placeholder="Confirm new password" className="w-full bg-slate-50/50 border border-slate-200 text-slate-900 text-sm rounded-xl px-4 py-3 focus:outline-none focus:border-blue-500" />
+              <button type="submit" disabled={isLoading} className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm py-3 rounded-xl disabled:opacity-50">Update password</button>
+            </form>
+          )}
+
           {/* Form: Merchant Login */}
-          {authMode === 'login' && (
+          {authMode === 'login' && !showForgotPassword && !resetToken && !verificationEmail && !twoFactorChallenge && (
             <form onSubmit={(e) => handleLogin(e)} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                   Email Address or Mobile Number
                 </label>
+                <p className="text-[11px] text-slate-500 mb-1.5">Use the email address or mobile number registered for this account, not the owner name.</p>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
@@ -302,9 +491,9 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                   <label className="block text-xs font-semibold text-slate-700">
                     Password
                   </label>
-                  <span className="text-[11px] text-blue-600 hover:text-blue-700 hover:underline cursor-pointer">
+                  <button type="button" onClick={() => { setShowForgotPassword(true); setErrorMsg(''); setSuccessMsg(''); }} className="text-[11px] text-blue-600 hover:text-blue-700 hover:underline cursor-pointer">
                     Forgot password?
-                  </span>
+                  </button>
                 </div>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -346,7 +535,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
           )}
 
           {/* Form: Merchant Registration */}
-          {authMode === 'register' && (
+          {authMode === 'register' && !verificationEmail && !twoFactorChallenge && (
             <form onSubmit={handleRegister} className="space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -469,6 +658,27 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                 </div>
               </div>
 
+              <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-xs text-slate-700 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={termsAccepted}
+                  onChange={(e) => setTermsAccepted(e.target.checked)}
+                  required
+                  className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <span className="leading-relaxed">
+                  I agree to the <strong>Terms and Conditions</strong>, including payment processing, account security, acceptable use, and data responsibilities.
+                </span>
+              </label>
+              <details className="rounded-xl border border-blue-100 bg-blue-50/60 px-3 py-2 text-[11px] text-slate-600">
+                <summary className="cursor-pointer font-semibold text-blue-700">Review Terms and Conditions</summary>
+                <div className="mt-2 space-y-1 leading-relaxed">
+                  <p>Use accurate business and settlement information and keep your credentials private.</p>
+                  <p>Only submit legitimate payment requests and comply with applicable laws and payment-network rules.</p>
+                  <p>You are responsible for reviewing transactions, protecting customer data, and reporting suspicious activity.</p>
+                </div>
+              </details>
+
               <button
                 type="submit"
                 disabled={isLoading}
@@ -481,10 +691,17 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
           )}
 
           {/* Form: Admin Login */}
-          {authMode === 'admin' && (
+          {authMode === 'admin' && !verificationEmail && !twoFactorChallenge && (
             <form onSubmit={(e) => handleLogin(e, { email: adminEmail, passcode: adminPasscode, role: 'admin' })} className="space-y-4">
-              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700">
-                Superadmin credentials grant full access to master system diagnostics, all registered merchants, fee controls, and SMS reconciliation engines.
+              <div className="p-4 bg-slate-950 rounded-xl text-xs text-slate-300 border border-slate-800 relative overflow-hidden">
+                <div className="absolute -right-6 -top-8 w-24 h-24 rounded-full bg-blue-500/20 blur-2xl" />
+                <div className="relative flex items-start gap-3">
+                  <Shield className="w-5 h-5 text-blue-300 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-white">Restricted administrator workspace</div>
+                    <div className="mt-1 leading-relaxed">Full visibility into merchants, payment approvals, settlement routing, security events, and reconciliation controls.</div>
+                  </div>
+                </div>
               </div>
 
               <div>
@@ -496,7 +713,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                   value={adminEmail}
                   onChange={(e) => setAdminEmail(e.target.value)}
                   required
-                  placeholder="admin@9tepay.com"
+                  placeholder="administrator@example.com"
                   className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs sm:text-sm rounded-xl px-4 py-2.5 focus:outline-none focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all font-mono"
                 />
               </div>
@@ -510,12 +727,10 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                   value={adminPasscode}
                   onChange={(e) => setAdminPasscode(e.target.value)}
                   required
-                  placeholder="admin1234"
+                  placeholder="Enter administrator passcode"
                   className="w-full bg-slate-50 border border-slate-200 text-slate-900 text-xs sm:text-sm rounded-xl px-4 py-2.5 focus:outline-none focus:bg-white focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all font-mono"
                 />
-                <p className="text-[11px] text-slate-500 mt-1.5">
-                  Default passcode: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800 font-mono font-semibold">admin1234</code> or your custom configured key.
-                </p>
+                <p className="text-[11px] text-slate-500 mt-1.5">Use your configured administrator credential. Sessions are protected and automatically expire.</p>
               </div>
 
               <button
@@ -524,7 +739,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
                 className="w-full bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs sm:text-sm py-3 rounded-xl transition-all shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 <Shield className="w-4 h-4" />
-                <span>Sign In as Master Administrator</span>
+                <span>Unlock Command Center</span>
               </button>
             </form>
           )}
@@ -592,4 +807,3 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
     </div>
   );
 };
-

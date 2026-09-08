@@ -193,7 +193,13 @@ export async function safeFetch<T = any>(
       error: null,
     };
   } catch (err: any) {
-    const message = err?.message || 'Network connection error. Please check your internet connection.';
+    const rawMessage = err?.message || '';
+    const message =
+      rawMessage.toLowerCase().includes('failed to fetch') ||
+      rawMessage.toLowerCase().includes('networkerror') ||
+      rawMessage.toLowerCase().includes('network request failed')
+        ? 'Unable to reach the 9tepay server. Start the app server and try again.'
+        : rawMessage || 'Network connection error. Please check your internet connection.';
     return {
       ok: false,
       status: 0,

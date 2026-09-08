@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { Order, BankAccountQR, User } from '../types';
 import { generateAppDeeplinks, formatCurrency } from '../utils/upi';
-import { safeFetch } from '../utils/api';
+import { formatErrorMessage, safeFetch } from '../utils/api';
 import { Logo } from './Logo';
 
 interface HostedCheckoutProps {
@@ -189,6 +189,12 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
   };
 
   const handleAppIntentClick = (appName: string, targetUrl: string, e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!/^(upi|tez|phonepe|paytmmp|in\.org\.npci\.upiapp|cred):\/\//i.test(targetUrl)) {
+      setVerificationError('This payment app link is unavailable. Please use the QR code or copy the UPI ID.');
+      return;
+    }
+
     // 1. Copy VPA to clipboard automatically so user can paste if app requires manual entry
     try {
       if (navigator.clipboard) {
@@ -206,13 +212,9 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
 
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
     
-    // Direct intent invocation
+    // Launching an intent only opens the payment app; it never confirms settlement.
     try {
-      if (window.top && window.top !== window) {
-        window.top.location.href = targetUrl;
-      } else {
-        window.location.href = targetUrl;
-      }
+      window.location.href = targetUrl;
     } catch {
       window.location.href = targetUrl;
     }
@@ -428,8 +430,11 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
 
   const handleVerifyUtr = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const cleanUtr = utrInput.trim();
-    if (!cleanUtr) return;
+    const cleanUtr = utrInput.replace(/\s/g, '');
+    if (!/^\d{12}$/.test(cleanUtr)) {
+      setVerificationError('Enter the exact 12-digit UTR shown in your UPI or bank app.');
+      return;
+    }
 
     setIsVerifying(true);
     setVerificationError('');
@@ -451,7 +456,7 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
         }),
       });
 
-      if ((res.ok && res.data?.success) || res.data?.order) {
+      if (res.ok && res.data?.success && res.data.order) {
         const updatedOrder: Order = res.data?.order || {
           ...order,
           utrNumber: cleanUtr,
@@ -497,43 +502,10 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
         }
         const cleanErr = typeof rawErr === 'string' ? rawErr : JSON.stringify(rawErr);
 
-        if (cleanErr.includes('Duplicate UTR') || cleanErr.includes('Invalid UTR format')) {
-          setVerificationError(cleanErr);
-        } else {
-          // Fallback to awaiting approval
-          setSubmittedUtr(cleanUtr);
-          setIsAwaitingApproval(true);
-
-          const fallbackUpdatedOrder: Order = {
-            ...order,
-            utrNumber: cleanUtr,
-            status: 'PENDING',
-            reviewRequired: true,
-          };
-          setOrder(fallbackUpdatedOrder);
-
-          try {
-            const storedStr = localStorage.getItem('9tepay_orders');
-            const storedOrders: Order[] = storedStr ? JSON.parse(storedStr) : [];
-            const idx = storedOrders.findIndex(
-              (o) => o.id === fallbackUpdatedOrder.id || o.orderNumber === fallbackUpdatedOrder.orderNumber
-            );
-            if (idx >= 0) {
-              storedOrders[idx] = { ...storedOrders[idx], ...fallbackUpdatedOrder, utrNumber: cleanUtr };
-            } else {
-              storedOrders.unshift(fallbackUpdatedOrder);
-            }
-            localStorage.setItem('9tepay_orders', JSON.stringify(storedOrders));
-          } catch {}
-
-          window.dispatchEvent(new CustomEvent('utr_submitted', { detail: fallbackUpdatedOrder }));
-          window.dispatchEvent(new Event('storage'));
-          onUtrSubmitted?.(fallbackUpdatedOrder);
-        }
+        setVerificationError(cleanErr);
       }
     } catch (err: any) {
-      setSubmittedUtr(cleanUtr);
-      setIsAwaitingApproval(true);
+      setVerificationError(formatErrorMessage(err, 'Unable to submit UTR. Please check your connection and try again.'));
     } finally {
       setIsVerifying(false);
     }
@@ -1132,10 +1104,10 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
                   </label>
                   <input
                     type="text"
-                    maxLength={16}
+                    maxLength={12}
                     disabled={isAwaitingApproval || Boolean(submittedUtr)}
                     value={submittedUtr || utrInput}
-                    onChange={(e) => setUtrInput(e.target.value.replace(/\s+/g, ''))}
+                    onChange={(e) => setUtrInput(e.target.value.replace(/\D/g, '').slice(0, 12))}
                     placeholder="e.g. 423019827361"
                     className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-slate-900 font-mono text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all placeholder:text-slate-400 disabled:bg-slate-100 disabled:text-slate-700 disabled:cursor-not-allowed"
                   />

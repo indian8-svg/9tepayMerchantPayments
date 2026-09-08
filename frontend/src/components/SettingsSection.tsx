@@ -75,9 +75,34 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showRegenModal, setShowRegenModal] = useState(false);
+  const [totpSecret, setTotpSecret] = useState('');
+  const [totpCode, setTotpCode] = useState('');
 
   const clearMessage = () => {
     setTimeout(() => setStatusMessage(null), 4000);
+  };
+
+  const handleEnableTotp = async () => {
+    setStatusMessage(null);
+    try {
+      if (!totpSecret) {
+        const setup = await safeFetch<{ success: boolean; secret?: string; error?: string }>('/api/auth/2fa/setup', { method: 'POST' });
+        if (!setup.ok || !setup.data?.secret) throw new Error(setup.data?.error || setup.error || 'Unable to start authenticator setup.');
+        setTotpSecret(setup.data.secret);
+        setStatusMessage({ type: 'success', text: `Add this key to your authenticator app: ${setup.data.secret}` });
+        return;
+      }
+      const enabled = await safeFetch<{ success: boolean; error?: string }>('/api/auth/2fa/enable', {
+        method: 'POST',
+        body: JSON.stringify({ code: totpCode }),
+      });
+      if (!enabled.ok || !enabled.data?.success) throw new Error(enabled.data?.error || enabled.error || 'Invalid authenticator code.');
+      setTotpSecret('');
+      setTotpCode('');
+      setStatusMessage({ type: 'success', text: 'Authenticator-app two-factor authentication is enabled.' });
+    } catch (error: any) {
+      setStatusMessage({ type: 'error', text: error.message || 'Unable to configure two-factor authentication.' });
+    }
   };
 
   // 1. Save Personal Details (Email, Phone, Name)
@@ -156,21 +181,24 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
 
     setIsSaving(true);
     try {
-      await safeFetch('/api/auth/update-password', {
+      const response = await safeFetch<{ success: boolean; error?: string }>('/api/auth/update-password', {
         method: 'POST',
         body: JSON.stringify({ currentPassword, newPassword }),
       });
+      if (!response.ok || !response.data?.success) {
+        throw new Error(response.error || response.data?.error || 'Unable to update password.');
+      }
 
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
       setStatusMessage({ type: 'success', text: 'Password updated successfully! Your session is now secured.' });
       clearMessage();
-    } catch {
+    } catch (error: any) {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      setStatusMessage({ type: 'success', text: 'Password changed successfully!' });
+      setStatusMessage({ type: 'error', text: error?.message || 'Unable to update password.' });
       clearMessage();
     } finally {
       setIsSaving(false);
@@ -753,6 +781,23 @@ export const SettingsSection: React.FC<SettingsSectionProps> = ({
               <h3 className="text-base font-bold text-slate-900">Anti-Fraud &amp; Automated Settlement Preferences</h3>
               <p className="text-xs text-slate-500">Configure UTR verification algorithms and multi-bank load balancing</p>
             </div>
+          </div>
+
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 space-y-3">
+            <div>
+              <h4 className="font-bold text-emerald-950 text-sm">Authenticator-app two-factor authentication</h4>
+              <p className="text-[11px] text-emerald-800 mt-1">Protect sign-in with a time-based code from Google Authenticator, Microsoft Authenticator, or 1Password.</p>
+            </div>
+            {totpSecret && (
+              <>
+                <p className="text-[11px] text-slate-700">Manual setup key:</p>
+                <code className="block bg-white border border-emerald-200 rounded-lg p-2 text-xs tracking-widest break-all">{totpSecret}</code>
+                <input type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={totpCode} onChange={(e) => setTotpCode(e.target.value)} placeholder="Enter the 6-digit app code" className="w-full px-3 py-2 bg-white border border-emerald-200 rounded-lg text-sm tracking-[0.3em] text-center focus:outline-none focus:border-emerald-500" />
+              </>
+            )}
+            <button type="button" onClick={handleEnableTotp} className="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold">
+              {totpSecret ? 'Confirm and enable 2FA' : 'Set up authenticator app'}
+            </button>
           </div>
 
           <div className="space-y-4 text-xs">

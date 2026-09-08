@@ -14,6 +14,7 @@ import {
   Sparkles,
   ExternalLink,
 } from 'lucide-react';
+import { safeFetch, formatErrorMessage } from '../utils/api';
 
 interface ContactPageProps {
   onBackToDashboard?: () => void;
@@ -33,36 +34,42 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [copiedEmail, setCopiedEmail] = useState(false);
-  const [copiedAddress, setCopiedAddress] = useState(false);
+  const [submitError, setSubmitError] = useState('');
 
   const officialEmail = 'info@9tepay.online';
-  const officialAddress = 'H70 gali no4 mamura gautam budhha nagar 201307';
 
   const handleCopy = (text: string, type: 'email' | 'address') => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard?.writeText(text).catch(() => {});
     if (type === 'email') {
       setCopiedEmail(true);
       setTimeout(() => setCopiedEmail(false), 2000);
-    } else {
-      setCopiedAddress(true);
-      setTimeout(() => setCopiedAddress(false), 2000);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
-
-    setTimeout(() => {
-      setIsSubmitting(false);
+    setSubmitError('');
+    try {
+      const response = await safeFetch<{ success: boolean; message?: string; error?: string }>('/api/contact/inquiries', {
+        method: 'POST',
+        body: JSON.stringify(formData),
+      });
+      if (!response.ok || !response.data?.success) {
+        throw new Error(response.data?.error || response.error || 'Unable to send your inquiry.');
+      }
       setSubmitted(true);
-    }, 1000);
+    } catch (error) {
+      setSubmitError(formatErrorMessage(error, 'Unable to send your inquiry. Please try again.'));
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8 sm:px-6 space-y-10 font-sans">
+    <div className="max-w-6xl mx-auto px-4 py-6 sm:px-6 sm:py-8 space-y-8 sm:space-y-10 font-sans">
       {/* Top Banner */}
-      <section className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-950 text-white rounded-3xl p-8 sm:p-12 shadow-xl border border-slate-800 relative overflow-hidden">
+      <section className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-950 text-white rounded-3xl p-6 sm:p-12 shadow-xl border border-slate-800 relative overflow-hidden">
         <div className="absolute top-0 right-0 w-80 h-80 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="max-w-3xl space-y-4 relative z-10">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-blue-500/10 border border-blue-400/30 text-blue-300 text-xs font-semibold uppercase tracking-wider">
@@ -72,7 +79,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
           <h1 className="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">
             Contact 9tepay Team
           </h1>
-          <p className="text-base sm:text-lg text-slate-300 font-medium">
+          <p className="text-sm sm:text-lg text-slate-300 font-medium leading-relaxed">
             Have questions regarding our flat zero-fee UPI gateway, merchant sandbox API testing, or custom multi-bank auto-routing? Get in touch with our team today.
           </p>
         </div>
@@ -124,23 +131,14 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
               </span>
             </div>
             <div>
-              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Corporate Office Address</h3>
+              <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Corporate Headquarters</h3>
               <p className="text-sm font-bold text-slate-900 mt-1 leading-snug">
-                {officialAddress}
+                Sector 16, Noida, Gautam Buddha Nagar
+                <br />
+                Uttar Pradesh, Pin Code: 201301
+                <br />
+                India
               </p>
-              <p className="text-xs text-slate-500 mt-1">
-                Mamura, Sector 66, Gautam Buddha Nagar, Uttar Pradesh — 201307
-              </p>
-            </div>
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-              <span className="text-[11px] text-slate-500">Pincode: 201307</span>
-              <button
-                onClick={() => handleCopy(officialAddress, 'address')}
-                className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 cursor-pointer"
-              >
-                {copiedAddress ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                <span>{copiedAddress ? 'Copied' : 'Copy Address'}</span>
-              </button>
             </div>
           </div>
 
@@ -168,7 +166,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
         </div>
 
         {/* Right Contact Form Panel (7 cols) */}
-        <div className="lg:col-span-7 bg-white border border-slate-200/90 rounded-3xl p-6 sm:p-8 shadow-sm">
+        <div className="lg:col-span-7 bg-white border border-slate-200/90 rounded-3xl p-5 sm:p-8 shadow-sm">
           {submitted ? (
             <div className="py-12 text-center space-y-4">
               <div className="w-16 h-16 rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center mx-auto shadow-inner">
@@ -204,6 +202,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Send an Enterprise Query</h2>
                 <p className="text-xs text-slate-500">Fill out your business details below to get direct onboarding support.</p>
+                <p className="text-[11px] text-slate-500">Your details are sent securely to 9tepay Support. We do not sell inquiry data.</p>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -231,6 +230,12 @@ export const ContactPage: React.FC<ContactPageProps> = ({ onBackToDashboard }) =
                   />
                 </div>
               </div>
+
+              {submitError && (
+                <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-3 text-xs font-medium text-rose-700">
+                  {submitError}
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>

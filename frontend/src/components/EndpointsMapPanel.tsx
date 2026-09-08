@@ -65,7 +65,7 @@ export const EndpointsMapPanel: React.FC<EndpointsMapPanelProps> = ({ endpoints,
           <tbody className="divide-y divide-slate-100">
             {endpoints.map((ep, idx) => (
               <tr key={idx} className="hover:bg-slate-50 transition-colors">
-                <td className="py-3 px-3">{getMethodBadge(ep.method)}</td>
+                <td className="py-3 px-3">{getMethodBadge(ep.method || 'UNKNOWN')}</td>
                 <td className="py-3 px-3 font-mono text-emerald-700 font-bold">
                   {ep.path}
                 </td>

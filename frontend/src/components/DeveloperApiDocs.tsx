@@ -10,6 +10,7 @@ import {
   Send,
   AlertCircle,
   CheckCircle,
+  Lock,
 } from 'lucide-react';
 import { MerchantProfile } from '../types';
 import { safeFetch } from '../utils/api';
@@ -319,7 +320,7 @@ func main() {
             </div>
             <pre className="p-2 bg-white rounded font-mono text-[10px] text-slate-800 border border-slate-200 overflow-x-auto">
 {`const crypto = require('crypto');
-const expected = crypto.createHmac('sha256', '${profile.webhookSecret}').update(JSON.stringify(payload)).digest('hex');
+const expected = crypto.createHmac('sha256', process.env.WEBHOOK_SECRET).update(JSON.stringify(payload)).digest('hex');
 const isValid = req.headers['x-signature-sha256'] === expected;`}
             </pre>
           </div>
@@ -461,7 +462,10 @@ const isValid = req.headers['x-signature-sha256'] === expected;`}
                   HMAC secret key
                 </label>
                 <div className="bg-slate-100 border border-slate-200 text-slate-600 font-mono text-[11px] rounded-xl px-3 py-2.5 overflow-hidden text-ellipsis whitespace-nowrap">
-                  {profile.webhookSecret || 'whsec_default'}
+                  <span className="inline-flex items-center gap-1.5">
+                    <Lock className="w-3 h-3 text-emerald-600" />
+                    Stored securely on the server
+                  </span>
                 </div>
               </div>
             </div>

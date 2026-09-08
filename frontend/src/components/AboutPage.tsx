@@ -102,7 +102,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({
       step: '04',
       title: 'TRUST',
       subtitle: 'Verify Before Paying',
-      desc: 'Experience zero-fee instant settlements and 99.9% uptime firsthand before paying your flat annual subscription license.',
+      desc: 'Experience zero-fee instant settlements and 99.9% uptime firsthand with free access from day one.',
       color: 'from-amber-500 to-orange-500',
     },
   ];
@@ -110,7 +110,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({
   const copySamplePayload = () => {
     navigator.clipboard.writeText(`// 9tepay Direct Bank Gateway Initialization
 const gateway = new NineTePayGateway({
-  apiKey: "live_sec_9tp_781293a",
+  apiKey: process.env.NINEPAY_API_KEY,
   merchantVpa: "merchant.settle@hdfcbank"
 });`);
     setCopiedCode(true);
@@ -169,13 +169,13 @@ const gateway = new NineTePayGateway({
       <section className="bg-white border border-slate-200/90 rounded-3xl p-8 sm:p-10 shadow-sm relative overflow-hidden">
         <div className="max-w-3xl space-y-4">
           <div className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-200/60">
-            Transparent Subscription
+            Free Merchant Access
           </div>
           <h2 className="text-2xl sm:text-4xl font-extrabold text-slate-900 tracking-tight">
-            Simple Pricing. Zero Hidden Fees.
+            Simple Pricing. Completely Free.
           </h2>
           <p className="text-base sm:text-lg text-slate-600 font-medium">
-            Stop giving away 2% of your gross turnover to legacy payment aggregators.
+            Start accepting payments without subscription fees, setup charges, or hidden costs.
           </p>
         </div>
 
@@ -184,27 +184,27 @@ const gateway = new NineTePayGateway({
           <div className="lg:col-span-1 bg-gradient-to-br from-slate-900 via-blue-950 to-slate-900 text-white rounded-2xl p-6 sm:p-8 flex flex-col justify-between shadow-xl border border-slate-800 relative">
             <div className="space-y-4">
               <span className="text-xs font-bold uppercase tracking-wider text-blue-400 bg-blue-950/80 border border-blue-800 px-3 py-1 rounded-full inline-block">
-                Flat Enterprise License
+                Free Forever Plan
               </span>
               <div>
                 <div className="text-3xl sm:text-4xl font-black text-white tracking-tight">
-                  ₹1.5 Lakhs <span className="text-lg font-normal text-slate-400">/ Year</span>
+                  ₹0 <span className="text-lg font-normal text-slate-400">/ Forever</span>
                 </div>
                 <div className="text-xs font-semibold text-emerald-400 mt-1 font-mono">
-                  Flat Annual Subscription | Unlimited Processing Volume
+                  No Subscription Fee | No Setup Charge
                 </div>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed border-t border-slate-800 pt-3">
-                Process tens of crores in monthly turnover without paying any commission or volume surcharges.
+                Get started today with the complete merchant toolkit and keep 100% of your customer payments.
               </p>
             </div>
 
             <div className="mt-6 pt-4 border-t border-slate-800">
               <button
-                onClick={onNavigateToContact}
+                onClick={onNavigateToAuth}
                 className="w-full py-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs uppercase tracking-wider rounded-xl transition-colors cursor-pointer shadow-md text-center"
               >
-                Request Enterprise Key
+                Start Free
               </button>
             </div>
           </div>
@@ -212,7 +212,7 @@ const gateway = new NineTePayGateway({
           <div className="lg:col-span-2 bg-slate-50 border border-slate-200/80 rounded-2xl p-6 sm:p-8 space-y-4">
             <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
               <CheckCircle2 className="w-5 h-5 text-blue-600" />
-              <span>What Is Included in the Flat Subscription?</span>
+              <span>What Is Included for Free?</span>
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-slate-700 font-medium">
@@ -245,7 +245,7 @@ const gateway = new NineTePayGateway({
             <div className="p-4 bg-blue-50/80 border border-blue-200 rounded-xl text-xs text-blue-900 flex items-center justify-between gap-4">
               <div>
                 <span className="font-bold">Comparing to Legacy Aggregators?</span>
-                <p className="text-[11px] text-blue-700">At ₹1 Cr processing volume, legacy 2% gateways cost ₹2 Lakhs in fees. With 9tepay, your fee stays capped at ₹1.5 Lakhs regardless of scale.</p>
+                <p className="text-[11px] text-blue-700">No annual license, subscription, or setup fee. Create your merchant account and start using 9tepay for free.</p>
               </div>
             </div>
           </div>
@@ -369,7 +369,7 @@ const gateway = new NineTePayGateway({
 import { NineTePay } from '@9tepay/sdk';
 
 const sdk = new NineTePay({
-  apiKey: 'live_sec_9tp_781293a',
+  apiKey: process.env.NINEPAY_API_KEY,
   merchantVpa: 'merchant.settle@hdfcbank',
   routingStrategy: 'smart_round_robin'
 });

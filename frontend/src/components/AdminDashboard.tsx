@@ -12,6 +12,14 @@ import {
   Search,
   X,
   Radio,
+  TrendingUp,
+  Clock3,
+  ServerCog,
+  ArrowUpRight,
+  WalletCards,
+  UserPlus,
+  Bell,
+  ShieldCheck,
 } from 'lucide-react';
 import { AdminStats, MerchantListItem, Order } from '../types';
 import { formatCurrency } from '../utils/upi';
@@ -133,6 +141,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ orders, onRefres
     const matchesStatus = statusFilter === 'ALL' || m.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
+  const pendingApprovals = orders.filter((order) => order.status === 'PENDING' && Boolean(order.utrNumber));
+  const paidOrders = orders.filter((order) => order.status === 'PAID');
+  const paidToday = paidOrders.filter((order) => {
+    const timestamp = order.paidAt || order.createdAt;
+    return timestamp && new Date(timestamp).toDateString() === new Date().toDateString();
+  });
+  const todayVolume = paidToday.reduce((sum, order) => sum + Number(order.amount || 0), 0);
+  const recentOrders = [...orders]
+    .sort((a, b) => new Date(b.paidAt || b.createdAt).getTime() - new Date(a.paidAt || a.createdAt).getTime())
+    .slice(0, 5);
 
   return (
     <div className="space-y-6">
@@ -184,6 +202,64 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ orders, onRefres
             <span>{reconciliationMsg}</span>
           </div>
         )}
+      </div>
+
+      {/* Operations command strip */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 rounded-2xl bg-slate-950 text-white p-5 sm:p-6 shadow-sm relative overflow-hidden">
+          <div className="absolute -right-12 -top-16 w-48 h-48 rounded-full bg-blue-500/20 blur-3xl" />
+          <div className="relative flex flex-col sm:flex-row sm:items-end justify-between gap-5">
+            <div>
+              <div className="flex items-center gap-2 text-blue-300 text-[11px] font-bold uppercase tracking-[0.18em]">
+                <Activity className="w-3.5 h-3.5" />
+                Live operations center
+              </div>
+              <h3 className="text-xl sm:text-2xl font-black tracking-tight mt-2">Everything important, one view.</h3>
+              <p className="text-xs text-slate-400 mt-2 max-w-xl">
+                Monitor money movement, approve payment proofs, govern merchant access, and keep the gateway healthy.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 text-xs font-semibold text-emerald-300 shrink-0">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              Systems operational
+            </div>
+          </div>
+          <div className="relative grid grid-cols-2 sm:grid-cols-4 gap-2 mt-6">
+            {[
+              { label: 'Approvals', value: pendingApprovals.length, icon: Clock3, tone: 'text-amber-300' },
+              { label: 'Paid today', value: paidToday.length, icon: CheckCircle2, tone: 'text-emerald-300' },
+              { label: 'Live VPAs', value: stats.activeVpas, icon: WalletCards, tone: 'text-blue-300' },
+              { label: 'Webhook SLA', value: `${stats.webhookSuccessRate}%`, icon: ShieldCheck, tone: 'text-violet-300' },
+            ].map(({ label, value, icon: Icon, tone }) => (
+              <div key={label} className="rounded-xl bg-white/5 border border-white/10 px-3 py-3">
+                <Icon className={`w-4 h-4 ${tone} mb-2`} />
+                <div className="text-lg font-black">{value}</div>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider">{label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-slate-500 text-[11px] font-bold uppercase tracking-wider">
+              <TrendingUp className="w-4 h-4 text-emerald-600" />
+              Today at a glance
+            </div>
+            <span className="text-[10px] font-mono text-slate-400">IST</span>
+          </div>
+          <div className="text-2xl font-black text-slate-900 mt-4">{formatCurrency(todayVolume)}</div>
+          <p className="text-xs text-slate-500 mt-1">Settled volume across {paidToday.length} successful payments.</p>
+          <div className="mt-5 pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Total orders</div>
+              <div className="text-sm font-bold text-slate-900 mt-1">{orders.length}</div>
+            </div>
+            <div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Pending review</div>
+              <div className="text-sm font-bold text-amber-700 mt-1">{pendingApprovals.length}</div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* KPI Stats Grid */}
@@ -372,6 +448,66 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ orders, onRefres
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+
+      {/* Recent activity */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <div className="lg:col-span-3 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Recent payment activity</h3>
+              <p className="text-[11px] text-slate-500 mt-1">Latest gateway events across your platform.</p>
+            </div>
+            <Activity className="w-4 h-4 text-blue-600" />
+          </div>
+          <div className="divide-y divide-slate-100">
+            {recentOrders.length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-500">No payment activity yet.</div>
+            ) : recentOrders.map((order) => (
+              <div key={order.id} className="py-3 flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${order.status === 'PAID' ? 'bg-emerald-50 text-emerald-600' : order.status === 'PENDING' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
+                  {order.status === 'PAID' ? <CheckCircle2 className="w-4 h-4" /> : <Clock3 className="w-4 h-4" />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-900 truncate">{order.orderNumber || order.id}</span>
+                    <span className="text-[10px] uppercase font-bold text-slate-400">{order.status}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-500 truncate">{order.customerName || 'Guest customer'} · {order.merchantVpa}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="text-xs font-bold text-slate-900">{formatCurrency(order.amount)}</div>
+                  <div className="text-[10px] text-slate-400">{new Date(order.paidAt || order.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900">Admin toolkit</h3>
+              <p className="text-[11px] text-slate-500 mt-1">Shortcuts for daily operations.</p>
+            </div>
+            <ServerCog className="w-4 h-4 text-slate-500" />
+          </div>
+          <div className="space-y-2">
+            {[
+              { label: 'Review payment approvals', detail: `${pendingApprovals.length} waiting for action`, icon: Clock3, color: 'text-amber-600 bg-amber-50' },
+              { label: 'Manage merchant access', detail: `${merchants.length} registered accounts`, icon: UserPlus, color: 'text-blue-600 bg-blue-50' },
+              { label: 'Check webhook delivery', detail: `${stats.webhookSuccessRate}% success rate`, icon: Bell, color: 'text-violet-600 bg-violet-50' },
+            ].map(({ label, detail, icon: Icon, color }) => (
+              <div key={label} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${color}`}><Icon className="w-4 h-4" /></div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold text-slate-800">{label}</div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">{detail}</div>
+                </div>
+                <ArrowUpRight className="w-3.5 h-3.5 text-slate-400" />
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 

@@ -27,6 +27,8 @@ import {
   ShieldCheck,
   ShieldAlert,
   UserCheck,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -46,6 +48,7 @@ import { BankAccountsManager } from './BankAccountsManager';
 import { SecurityCenterPanel } from './SecurityCenterPanel';
 import { TransactionsManager } from './TransactionsManager';
 import { CustomersManager } from './CustomersManager';
+import { QRCodeSVG } from 'qrcode.react';
 
 interface MerchantDashboardProps {
   orders: Order[];
@@ -98,6 +101,7 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
   const [isCreating, setIsCreating] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedSecret, setCopiedSecret] = useState(false);
+  const [showApiCredentials, setShowApiCredentials] = useState(false);
   const [copiedLinkIndex, setCopiedLinkIndex] = useState<string | null>(null);
 
   // Form states for creating an order
@@ -108,6 +112,10 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
   const [note, setNote] = useState('E-Commerce Order Purchase');
   const [orderId, setOrderId] = useState(`ORD-${Math.floor(1000 + Math.random() * 9000)}`);
   const [selectedBankId, setSelectedBankId] = useState<string>('');
+  const [createdPayment, setCreatedPayment] = useState<Order | null>(null);
+  const [createError, setCreateError] = useState('');
+  const [approvingOrderId, setApprovingOrderId] = useState<string | null>(null);
+  const [approvalError, setApprovalError] = useState('');
 
   // Settings form states
   const [editBusinessName, setEditBusinessName] = useState(profile?.businessName || '');
@@ -158,6 +166,7 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
     e.preventDefault();
     if (!amount || isNaN(Number(amount))) return;
     setIsCreating(true);
+    setCreateError('');
     try {
       const created = await onCreateOrder({
         amount: Number(amount),
@@ -169,13 +178,11 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
         bankAccountId: selectedBankId || undefined,
       });
       setShowCreateModal(false);
+      setCreatedPayment(created);
       setOrderId(`ORD-${Math.floor(1000 + Math.random() * 9000)}`);
-      // Copy created link immediately
-      if (created?.id) {
-        copyOrderLink(created.id, `${window.location.origin}/checkout/${created.id}`);
-      }
     } catch (err) {
       console.error(err);
+      setCreateError(err instanceof Error ? err.message : 'Unable to create payment link. Please try again.');
     } finally {
       setIsCreating(false);
     }
@@ -367,11 +374,21 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
 
                   <div className="flex items-center gap-2 mt-3 pt-2 border-t border-amber-100">
                     <button
-                      onClick={() => onApproveOrder?.(o.id)}
+                      disabled={approvingOrderId === o.id}
+                      onClick={async () => {
+                        setApprovingOrderId(o.id);
+                        setApprovalError('');
+                        try {
+                          await onApproveOrder?.(o.id);
+                        } catch (error: any) {
+                          setApprovalError(error?.message || 'Unable to approve this transaction. Please try again.');
+                        } finally {
+                          setApprovingOrderId(null);
+                        }
+                      }}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs py-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center gap-1 shadow-2xs"
                     >
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Approve</span>
+                      {approvingOrderId === o.id ? <span>Approving...</span> : <><Check className="w-3.5 h-3.5" /><span>Approve</span></>}
                     </button>
                     <button
                       onClick={() => onRejectOrder?.(o.id)}
@@ -384,6 +401,11 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
                 </div>
               ))}
             </div>
+            {approvalError && (
+              <div role="alert" className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700">
+                {approvalError}
+              </div>
+            )}
           </div>
         );
       })()}
@@ -806,11 +828,12 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
                 <input
                   type="text"
                   readOnly
-                  value={profile.apiKey}
+                  value={showApiCredentials ? profile.apiKey : '••••••••••••••••••••'}
                   className="flex-1 bg-slate-50 border border-slate-200 text-blue-700 font-mono text-xs rounded-xl px-4 py-2.5 focus:outline-none"
                 />
                 <button
                   onClick={() => copyText(profile.apiKey, setCopiedKey)}
+                  disabled={!showApiCredentials}
                   className="bg-white hover:bg-slate-50 text-slate-700 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 shadow-xs"
                 >
                   {copiedKey ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -827,11 +850,12 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
                 <input
                   type="text"
                   readOnly
-                  value={profile.apiSecret}
+                  value={showApiCredentials ? profile.apiSecret : '••••••••••••••••••••'}
                   className="flex-1 bg-slate-50 border border-slate-200 text-slate-700 font-mono text-xs rounded-xl px-4 py-2.5 focus:outline-none"
                 />
                 <button
                   onClick={() => copyText(profile.apiSecret, setCopiedSecret)}
+                  disabled={!showApiCredentials}
                   className="bg-white hover:bg-slate-50 text-slate-700 text-xs px-3.5 py-2.5 rounded-xl border border-slate-200 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 shadow-xs"
                 >
                   {copiedSecret ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -842,15 +866,24 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
 
             <div className="pt-2 flex items-center justify-between border-t border-slate-200">
               <div className="text-xs text-slate-500">
-                Regenerating keys will invalidate existing API integrations immediately.
+                Credentials are hidden by default. Reveal only when working on a trusted device.
               </div>
-              <button
-                onClick={onRegenerateKeys}
-                className="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-600 text-xs font-semibold transition-colors border border-rose-200 flex items-center gap-1.5 cursor-pointer shadow-xs"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Roll Keys</span>
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowApiCredentials((visible) => !visible)}
+                  className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  {showApiCredentials ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{showApiCredentials ? 'Hide' : 'Reveal'}</span>
+                </button>
+                <button
+                  onClick={onRegenerateKeys}
+                  className="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-600 text-xs font-semibold transition-colors border border-rose-200 flex items-center gap-1.5 cursor-pointer shadow-xs"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>Roll Keys</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -883,7 +916,7 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
           <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between gap-3 text-xs">
             <div>
               <div className="font-semibold text-slate-800">Webhook Secret Key</div>
-              <div className="font-mono text-blue-700 text-[11px] mt-0.5 font-semibold">{profile.webhookSecret}</div>
+              <div className="text-emerald-700 text-[11px] mt-0.5 font-semibold">Stored securely on the server</div>
             </div>
             <span className="text-[11px] text-slate-500 font-mono">Header: X-Signature-SHA256</span>
           </div>
@@ -1010,6 +1043,38 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
       )}
 
       {/* Modal: Create Payment Intent */}
+      {createdPayment && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Payment link created</h3>
+                <p className="text-xs text-slate-500 mt-1">Share this link or QR code with your customer.</p>
+              </div>
+              <button type="button" onClick={() => setCreatedPayment(null)} className="text-slate-400 hover:text-slate-700 cursor-pointer" aria-label="Close payment link dialog">✕</button>
+            </div>
+            <div className="flex justify-center">
+              <div className="p-3 bg-white border border-slate-200 rounded-xl">
+                <QRCodeSVG value={`${window.location.origin}/checkout/${createdPayment.id}`} size={190} level="M" includeMargin />
+              </div>
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 mb-1">Customer checkout link</label>
+              <div className="flex gap-2">
+                <input readOnly value={`${window.location.origin}/checkout/${createdPayment.id}`} className="min-w-0 flex-1 bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-lg px-3 py-2" />
+                <button type="button" onClick={() => copyOrderLink(createdPayment.id, `${window.location.origin}/checkout/${createdPayment.id}`)} className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold cursor-pointer">
+                  {copiedLinkIndex === createdPayment.id ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => window.open(`/checkout/${createdPayment.id}`, '_blank', 'noopener,noreferrer')} className="flex-1 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold cursor-pointer">Open checkout</button>
+              <button type="button" onClick={() => setCreatedPayment(null)} className="px-4 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold cursor-pointer">Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCreateModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
@@ -1105,6 +1170,11 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
                 Settlement UPI VPA: {selectedBankId ? (bankAccounts.find(b => b.id === selectedBankId)?.vpa || profile.vpa) : profile.vpa}
               </div>
 
+              {createError && (
+                <div className="mt-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-medium text-rose-700" role="alert">
+                  {createError}
+                </div>
+              )}
               <div className="pt-2 flex items-center justify-end gap-2">
                 <button
                   type="button"

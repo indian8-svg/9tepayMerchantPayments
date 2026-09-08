@@ -10,7 +10,7 @@
     },
     {
       "source": "/((?!api/|auth/).*)",
-      "destination": "/index.html"
+      "destination": "/frontend/index.html"
     }
   ]
 }

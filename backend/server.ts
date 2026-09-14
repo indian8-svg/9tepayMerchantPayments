@@ -1175,6 +1175,10 @@ app.post(["/api/auth/forgot-password", "/auth/forgot-password"], authRateLimiter
   const token = crypto.randomBytes(32).toString("hex");
   
   try {
+    await pool.query(
+      "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at",
+      [userId, hashAuthCode(token), Date.now() + 15 * 60 * 1000]
+    );
     await sendPasswordResetEmail(email, token);
     return res.json({
       ...response,

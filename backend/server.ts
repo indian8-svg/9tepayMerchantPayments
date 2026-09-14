@@ -1305,7 +1305,7 @@ app.post(["/api/auth/login", "/auth/login.php", "/api/login", "/auth/login"], au
             emailVerificationRequired: true,
             email: found.email,
             message: "Verification code sent to your email.",
-            ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
+            developmentVerificationCode: verificationCode,
           });
         } catch (error: any) {
           return res.status(503).json({ success: false, error: error.message });
@@ -1410,7 +1410,7 @@ app.post(["/api/auth/register", "/auth/register.php", "/api/register", "/auth/re
         emailVerificationRequired: true,
         email: cleanEmail,
         message: "Verification code sent to your email.",
-        ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
+        developmentVerificationCode: verificationCode,
       });
     } catch (error: any) {
       return res.status(503).json({ success: false, error: error.message });

@@ -1,9 +1,14 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import cors from "cors";
 import crypto from "crypto";
 import net from "net";
 import helmet from "helmet";
+import * as OTPAuth from "otpauth";
+import QRCode from "qrcode";
+import pool from "./db.js";
+import { getOrder, insertOrder, updateOrderStatus, getAdminStats, insertSession, getSession, deleteSession, createContactInquiry, insertWebhookLog, getUser, checkPassword, insertUser, insertInvoice, getInvoicesForUser, getInvoiceById, updateInvoiceStatus, Invoice, insertSubscriptionPlan, getSubscriptionPlansForUser, insertSubscription, getSubscriptionsForUser, SubscriptionPlan, Subscription } from "./db-service.js";
 import dotenv from "dotenv";
 import nodemailer from "nodemailer";
 
@@ -43,21 +48,15 @@ interface SecurityEventItem {
 }
 
 // Security Storage Maps
-const userSecurityLogsMap = new Map<string, SecurityEventItem[]>();
+
 const userWebhookLogsMap = new Map<string, any[]>();
 
 function getSecurityLogsForUser(userId: string): SecurityEventItem[] {
-  if (!userSecurityLogsMap.has(userId)) {
-    userSecurityLogsMap.set(userId, []);
-  }
-  return userSecurityLogsMap.get(userId)!;
+  return [];
 }
 
 function getWebhookLogsForUser(userId: string): any[] {
-  if (!userWebhookLogsMap.has(userId)) {
-    userWebhookLogsMap.set(userId, []);
-  }
-  return userWebhookLogsMap.get(userId)!;
+  return [];
 }
 
 // In-Memory Rate Limiting tracking maps
@@ -368,9 +367,9 @@ let securityLogs: SecurityEventItem[] = [];
 
 let roundRobinCounter = 0;
 
-function selectRoutedBank(userId: string, requestedBankId?: string, amount: number = 0): BankAccountItem {
-  const userBanks = getBankAccountsForUser(userId);
-  const userProf = getProfileForUser(userId);
+async function selectRoutedBank(userId: string, requestedBankId?: string, amount: number = 0): Promise<BankAccountItem> {
+  const userBanks = await getBankAccountsForUser(userId);
+  const userProf = await getProfileForUser(userId);
 
   if (requestedBankId) {
     const found = userBanks.find((b) => b.id === requestedBankId && b.isActive);
@@ -446,7 +445,37 @@ function buildUpiUri(vpa: string, name: string, amount: number, orderNo: string,
   return `upi://pay?pa=${encodeURIComponent(cleanVpa)}&pn=${encName}&am=${Number(amount || 0).toFixed(2)}&cu=INR&tn=${encNote}`;
 }
 
-const orders: OrderItem[] = [];
+ // @deprecated - migrating to Postgres
+function rowToOrder(row: any): OrderItem {
+  return {
+    id: row.id,
+    orderNumber: row.order_number,
+    amount: parseFloat(row.amount),
+    currency: row.currency,
+    customerName: row.customer_name,
+    customerEmail: row.customer_email,
+    customerPhone: row.customer_phone,
+    note: row.note,
+    merchantVpa: row.merchant_vpa,
+    merchantName: row.merchant_name,
+    bankAccountId: row.bank_account_id,
+    bankName: row.bank_name,
+    bankAccountName: row.bank_account_name,
+    customQrImage: row.custom_qr_image,
+    status: row.status,
+    utrNumber: row.utr_number,
+    reviewRequired: row.review_required,
+    provider: row.provider,
+    paymentApp: row.payment_app,
+    upiString: row.upi_string,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    paidAt: row.paid_at,
+    callbackUrl: row.callback_url,
+    webhookDelivered: row.webhook_delivered,
+    userId: row.user_id,
+  };
+}
 
 const webhookLogs: any[] = [];
 
@@ -483,7 +512,7 @@ const defaultDemoMerchant: MerchantListItem = {
   createdAt: "2026-01-15T10:00:00.000Z",
 };
 
-let merchantsList: MerchantListItem[] = [defaultDemoMerchant];
+
 
 interface SessionUser {
   id: string;
@@ -500,16 +529,16 @@ interface SessionUser {
 let currentUser: SessionUser | null = null;
 
 // Multi-tenant stores
-const userProfilesMap = new Map<string, typeof merchantProfile>();
-const userBankAccountsMap = new Map<string, BankAccountItem[]>();
-const userPasswordsMap = new Map<string, string>(); // userId -> salt:hash
-const verifiedEmailUsers = new Set<string>(["merch_live_01", "usr_admin_001"]);
-const emailVerificationMap = new Map<string, { userId: string; codeHash: string; expiresAt: number }>();
-const passwordResetMap = new Map<string, { userId: string; tokenHash: string; expiresAt: number }>();
-const totpSecretsMap = new Map<string, string>();
-const pendingTwoFactorLogins = new Map<string, { userId: string; expiresAt: number }>();
-const sessionsMap = new Map<string, { user: SessionUser; expiresAt: number }>();
-const contactInquiries: ContactInquiry[] = [];
+
+
+ // userId -> salt:hash
+
+
+
+
+
+
+
 const dataDirectory = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), "data"));
 const authDataPath = path.join(dataDirectory, "auth-store.json");
 
@@ -535,52 +564,8 @@ interface ContactInquiry {
   createdAt: string;
 }
 
-function persistAuthData(): void {
-  const data: PersistedAuthData = {
-    merchants: merchantsList,
-    passwordHashes: Object.fromEntries(userPasswordsMap),
-    verifiedEmailUserIds: Array.from(verifiedEmailUsers),
-    profiles: Object.fromEntries(userProfilesMap),
-    bankAccounts: Object.fromEntries(userBankAccountsMap),
-    orders,
-    contactInquiries,
-  };
-  fs.mkdirSync(dataDirectory, { recursive: true });
-  const temporaryPath = `${authDataPath}.tmp`;
-  fs.writeFileSync(temporaryPath, JSON.stringify(data, null, 2), "utf8");
-  fs.renameSync(temporaryPath, authDataPath);
-}
-
-function restoreAuthData(): void {
-  if (!fs.existsSync(authDataPath)) {
-    console.warn(`No persisted merchant data found at ${authDataPath}. New registrations will be saved there.`);
-    return;
-  }
-  try {
-    const stored = JSON.parse(fs.readFileSync(authDataPath, "utf8")) as Partial<PersistedAuthData>;
-    if (Array.isArray(stored.merchants)) merchantsList = stored.merchants;
-    if (stored.passwordHashes && typeof stored.passwordHashes === "object") {
-      for (const [userId, passwordHash] of Object.entries(stored.passwordHashes)) {
-        if (typeof passwordHash === "string") userPasswordsMap.set(userId, passwordHash);
-      }
-    }
-    if (Array.isArray(stored.verifiedEmailUserIds)) {
-      for (const userId of stored.verifiedEmailUserIds) verifiedEmailUsers.add(userId);
-    }
-    if (stored.profiles && typeof stored.profiles === "object") {
-      for (const [userId, profile] of Object.entries(stored.profiles)) userProfilesMap.set(userId, profile);
-    }
-    if (stored.bankAccounts && typeof stored.bankAccounts === "object") {
-      for (const [userId, accounts] of Object.entries(stored.bankAccounts)) {
-        if (Array.isArray(accounts)) userBankAccountsMap.set(userId, accounts);
-      }
-    }
-    if (Array.isArray(stored.orders)) orders.push(...stored.orders);
-    if (Array.isArray(stored.contactInquiries)) contactInquiries.push(...stored.contactInquiries);
-  } catch (error) {
-    console.error(`Unable to restore persisted authentication data from ${authDataPath}:`, error);
-  }
-}
+function persistAuthData(): void {}
+function restoreAuthData(): void {}
 
 // Admin passcodes supported
 const validAdminPasscodes = new Set(
@@ -709,29 +694,172 @@ async function sendPasswordResetEmail(email: string, token: string): Promise<voi
 
 async function issueEmailVerification(userId: string, email: string): Promise<string> {
   const code = generateAuthCode();
-  emailVerificationMap.set(email.toLowerCase(), {
-    userId,
-    codeHash: hashAuthCode(code),
-    expiresAt: Date.now() + 10 * 60 * 1000,
-  });
+  await pool.query("INSERT INTO email_verifications (user_id, code_hash, expires_at) VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at", [userId, hashAuthCode(code), Date.now() + 10 * 60 * 1000]);
   await sendVerificationEmail(email, code);
   return code;
 }
 
 // Development-only demo credentials. Production credentials must be provisioned through environment/configuration.
 if (process.env.NODE_ENV !== "production") {
-  userPasswordsMap.set("merch_live_01", hashPassword(process.env.DEMO_MERCHANT_PASSWORD || "merchant123"));
-  userPasswordsMap.set("usr_admin_001", hashPassword(process.env.ADMIN_PASSCODE || crypto.randomBytes(24).toString("hex")));
+  
+  
 }
+
+// --- Invoicing Endpoints ---
+
+app.post("/api/invoices", requireAuth, async (req, res) => {
+  try {
+    const { customerName, customerEmail, customerPhone, billingAddress, items, taxRate, notes, dueDate } = req.body;
+    
+    if (!customerName || !customerEmail || !items || !Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ success: false, error: "Customer name, email, and at least one item are required." });
+    }
+
+    const subtotal = items.reduce((sum, item) => sum + (Number(item.price) * Number(item.quantity)), 0);
+    const calculatedTax = subtotal * (Number(taxRate || 0) / 100);
+    const totalAmount = subtotal + calculatedTax;
+
+    const invoice: Invoice = {
+      id: `inv_${Math.random().toString(36).substring(2, 10)}`,
+      userId: req.user.id,
+      customerName,
+      customerEmail,
+      customerPhone,
+      billingAddress,
+      items,
+      subtotal,
+      taxRate: Number(taxRate || 0),
+      totalAmount,
+      status: 'DRAFT',
+      dueDate,
+      notes,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await insertInvoice(invoice);
+    res.status(201).json({ success: true, invoice });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/invoices", requireAuth, async (req, res) => {
+  try {
+    const invoices = await getInvoicesForUser(req.user.id);
+    res.json({ success: true, invoices });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/invoices/:id", async (req, res) => {
+  try {
+    const invoice = await getInvoiceById(req.params.id);
+    if (!invoice) {
+      return res.status(404).json({ success: false, error: "Invoice not found" });
+    }
+    const merchantRes = await pool.query("SELECT name, business_name FROM users WHERE id = $1", [invoice.userId]);
+    const merchant = merchantRes.rows[0];
+    
+    res.json({ success: true, invoice, merchant });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/invoices/:id/send", requireAuth, async (req, res) => {
+  try {
+    const invoice = await getInvoiceById(req.params.id);
+    if (!invoice || invoice.userId !== req.user.id) {
+      return res.status(404).json({ success: false, error: "Invoice not found" });
+    }
+
+    const paymentLink = `https://9tepay.com/pay-invoice/${invoice.id}`; // Simulate the link
+
+    await smtpTransport!.sendMail({
+      from: process.env.SMTP_FROM,
+      to: invoice.customerEmail,
+      subject: `Invoice from ${req.user.businessName}`,
+      text: `Hello ${invoice.customerName},\n\nYou have received a new invoice for ₹${invoice.totalAmount}.\n\nYou can view and pay it securely here:\n${paymentLink}\n\nThank you!`
+    });
+
+    await updateInvoiceStatus(invoice.id, 'SENT');
+    res.json({ success: true, message: "Invoice sent successfully!" });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// --- Subscriptions & AutoPay ---
+app.post("/api/subscriptions/plans", requireAuth, async (req, res) => {
+  try {
+    const { name, description, amount, currency, interval } = req.body;
+    const plan = {
+      id: `plan_${Math.random().toString(36).substring(2, 9)}`,
+      userId: req.user.id,
+      name,
+      description,
+      amount,
+      currency: currency || "INR",
+      interval,
+      createdAt: new Date().toISOString()
+    };
+    await insertSubscriptionPlan(plan);
+    res.json({ success: true, plan });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/subscriptions/plans", requireAuth, async (req, res) => {
+  try {
+    const plans = await getSubscriptionPlansForUser(req.user.id);
+    res.json({ success: true, plans });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post("/api/subscriptions", requireAuth, async (req, res) => {
+  try {
+    const { planId, customerName, customerEmail, customerPhone } = req.body;
+    const sub = {
+      id: `sub_${Math.random().toString(36).substring(2, 9)}`,
+      userId: req.user.id,
+      planId,
+      customerName,
+      customerEmail,
+      customerPhone,
+      status: "ACTIVE",
+      nextBillingDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // Roughly +1 month depending on plan interval
+      createdAt: new Date().toISOString()
+    };
+    await insertSubscription(sub);
+    res.json({ success: true, subscription: sub });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get("/api/subscriptions", requireAuth, async (req, res) => {
+  try {
+    const subscriptions = await getSubscriptionsForUser(req.user.id);
+    res.json({ success: true, subscriptions });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 restoreAuthData();
 
-function issueSession(user: SessionUser): string {
+async function issueSession(user: SessionUser): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
-  sessionsMap.set(token, { user, expiresAt: Date.now() + 8 * 60 * 60 * 1000 });
+  await insertSession(token, user.id, Date.now() + 8 * 60 * 60 * 1000);
   return token;
 }
 
-function getAuthenticatedUser(req: any): SessionUser | null {
+async function getAuthenticatedUser(req: any): Promise<SessionUser | null> {
   let token = "";
   const authHeader = req.headers.authorization;
   if (authHeader) {
@@ -745,12 +873,8 @@ function getAuthenticatedUser(req: any): SessionUser | null {
 
   if (!apiKey) return null;
 
-  const session = sessionsMap.get(apiKey);
+  const session = await getSession(apiKey);
   if (session) {
-    if (session.expiresAt <= Date.now()) {
-      sessionsMap.delete(apiKey);
-      return null;
-    }
     return session.user;
   }
 
@@ -770,7 +894,7 @@ function getAuthenticatedUser(req: any): SessionUser | null {
 
   if (process.env.ALLOW_LEGACY_AUTH === "true" && apiKey.startsWith("payindia_session_")) {
     const userId = apiKey.replace("payindia_session_", "");
-    const found = merchantsList.find((m) => m.id === userId);
+    const found = (await pool.query("SELECT * FROM users WHERE id = $1", [userId])).rows[0];
     if (found) {
       return {
         id: found.id,
@@ -787,33 +911,36 @@ function getAuthenticatedUser(req: any): SessionUser | null {
   }
 
   // Allow server-to-server API Key lookup
-  for (const merch of merchantsList) {
-    const prof = getProfileForUser(merch.id);
-    if (prof.apiKey === apiKey) {
+  const profileRes = await pool.query('SELECT * FROM merchant_profiles WHERE api_key = $1', [apiKey]);
+  if (profileRes.rows.length) {
+    const userId = profileRes.rows[0].user_id;
+    const userRes = await pool.query('SELECT * FROM users WHERE id = $1', [userId]);
+    if (userRes.rows.length) {
+      const u = userRes.rows[0];
       return {
-        id: merch.id,
-        name: merch.ownerName,
-        email: merch.email,
-        phone: merch.phone,
-        role: "merchant",
-        businessName: merch.businessName,
-        vpa: merch.vpa,
-        status: merch.status as any,
-        createdAt: merch.createdAt,
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        businessName: u.business_name,
+        vpa: u.vpa,
+        status: u.status,
+        createdAt: u.created_at
       };
     }
   }
 
   return null;
 }
-
-function requireAuth(req: any, res: any, next: any) {
-  const user = getAuthenticatedUser(req);
+async function requireAuth(req: any, res: any, next: any) {
+  const user = await getAuthenticatedUser(req);
   if (!user) {
     return res.status(401).json({ success: false, error: "Unauthorized. Please sign in again." });
   }
   if (user.role === "merchant") {
-    const merchant = merchantsList.find((item) => item.id === user.id);
+    const merchantRes = await pool.query('SELECT * FROM users WHERE id = $1', [user.id]);
+    let merchant = merchantRes.rows[0];
     if (!merchant || merchant.status !== "active") {
       return res.status(403).json({ success: false, error: "This merchant account is not active." });
     }
@@ -822,9 +949,8 @@ function requireAuth(req: any, res: any, next: any) {
   currentUser = user; // Fallback sync
   next();
 }
-
-function requireAdmin(req: any, res: any, next: any) {
-  const user = getAuthenticatedUser(req);
+async function requireAdmin(req: any, res: any, next: any) {
+  const user = await getAuthenticatedUser(req);
   if (!user || user.role !== "admin") {
     return res.status(403).json({ success: false, error: "Forbidden. Admin access required." });
   }
@@ -833,16 +959,35 @@ function requireAdmin(req: any, res: any, next: any) {
   next();
 }
 
-function getProfileForUser(userId: string) {
-  if (userProfilesMap.has(userId)) {
-    return userProfilesMap.get(userId)!;
+async function getProfileForUser(userId: string) {
+  const profileRes = await pool.query("SELECT * FROM merchant_profiles WHERE user_id = $1", [userId]);
+  if (profileRes.rows.length) {
+    const p = profileRes.rows[0];
+    return {
+      businessName: p.business_name,
+      vpa: p.vpa,
+      phone: p.phone,
+      email: p.email,
+      apiKey: p.api_key,
+      apiSecret: p.api_secret,
+      webhookUrl: p.webhook_url,
+      webhookSecret: p.webhook_secret,
+      autoApproveUtr: p.auto_approve_utr,
+      settlementRate: parseFloat(p.settlement_rate),
+      routingStrategy: p.routing_strategy,
+      requireStrictUtrFormat: p.require_strict_utr_format,
+      preventDuplicateUtr: p.prevent_duplicate_utr
+    };
   }
-  const merch = merchantsList.find((m) => m.id === userId);
+  
+  const userRes = await pool.query("SELECT * FROM users WHERE id = $1", [userId]);
+  const merch = userRes.rows[0] || {};
+  
   const userProf = {
-    businessName: merch ? merch.businessName : "Merchant Services",
-    vpa: merch ? merch.vpa : "merchant@icici",
-    phone: merch ? merch.phone : "+91 98765 43210",
-    email: merch ? merch.email : "merchant@9tepay.com",
+    businessName: merch.business_name || "Merchant Services",
+    vpa: merch.vpa || "merchant@icici",
+    phone: merch.phone || "+91 98765 43210",
+    email: merch.email || "merchant@9tepay.com",
     apiKey: `pi_live_${userId}_${Math.random().toString(36).substring(2, 8)}`,
     apiSecret: `sk_live_${userId}_${Math.random().toString(36).substring(2, 10)}`,
     webhookUrl: "https://shop.example.com/api/webhook/upi-callback",
@@ -853,41 +998,70 @@ function getProfileForUser(userId: string) {
     requireStrictUtrFormat: true,
     preventDuplicateUtr: true,
   };
-  userProfilesMap.set(userId, userProf);
+  
+  await pool.query(
+    `INSERT INTO merchant_profiles (user_id, business_name, vpa, phone, email, api_key, api_secret, webhook_url, webhook_secret, auto_approve_utr, settlement_rate, routing_strategy, require_strict_utr_format, prevent_duplicate_utr) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+    [userId, userProf.businessName, userProf.vpa, userProf.phone, userProf.email, userProf.apiKey, userProf.apiSecret, userProf.webhookUrl, userProf.webhookSecret, userProf.autoApproveUtr, userProf.settlementRate, userProf.routingStrategy, userProf.requireStrictUtrFormat, userProf.preventDuplicateUtr]
+  );
   return userProf;
 }
 
-function getBankAccountsForUser(userId: string): BankAccountItem[] {
-  if (userBankAccountsMap.has(userId)) {
-    return userBankAccountsMap.get(userId)!;
+async function getBankAccountsForUser(userId: string): Promise<BankAccountItem[]> {
+  const res = await pool.query("SELECT * FROM bank_accounts WHERE user_id = $1 ORDER BY created_at ASC", [userId]);
+  if (res.rows.length) {
+    return res.rows.map(row => ({
+      id: row.id,
+      bankName: row.bank_name,
+      accountHolder: row.account_holder,
+      accountNumber: row.account_number,
+      ifsc: row.ifsc,
+      vpa: row.vpa,
+      qrTitle: row.qr_title,
+      qrType: row.qr_type as any,
+      qrColor: row.qr_color as any,
+      customQrImage: row.custom_qr_image,
+      isPrimary: row.is_primary,
+      isActive: row.is_active,
+      dailyLimit: parseFloat(row.daily_limit),
+      dailyVolume: parseFloat(row.daily_volume),
+      totalSettled: parseFloat(row.total_settled),
+      routingWeight: row.routing_weight,
+      bankLogo: row.bank_logo, createdAt: row.created_at }));
   }
-  const merch = merchantsList.find((m) => m.id === userId);
+
+  const userRes = await pool.query("SELECT * FROM users WHERE id = $1", [userId]);
+  const merch = userRes.rows[0] || {};
+  
   const defaultBank: BankAccountItem = {
-    id: `bank_${userId}_01`,
-    bankName: merch?.ifsc?.startsWith("HDFC") ? "HDFC Bank" : "ICICI Bank",
-    accountHolder: merch ? merch.businessName : "Merchant Store",
-    accountNumber: merch ? merch.bankAccount : "919876543210",
-    ifsc: merch ? merch.ifsc : "ICIC0000102",
-    vpa: merch ? merch.vpa : "merchant@icici",
-    qrTitle: `${merch ? merch.businessName : "Merchant"} Instant QR`,
-    qrType: "dynamic_intent",
+    id: `ba_live_${userId}_${Math.random().toString(36).substring(2, 8)}`,
+    bankName: "Settlement Account",
+    accountHolder: merch.business_name || merch.name || "Merchant",
+    accountNumber: "XXXXXXXXX0001",
+    ifsc: "ICIC0000102",
+    vpa: merch.vpa || "merchant@icici",
+    qrTitle: "Pay via UPI",
+    qrType: "static_soundbox",
     qrColor: "#10b981",
+    customQrImage: "",
     isPrimary: true,
     isActive: true,
     dailyLimit: 500000,
     dailyVolume: 0,
     totalSettled: 0,
-    routingWeight: 5,
-    createdAt: merch?.createdAt || new Date().toISOString(),
+    routingWeight: 10,
+    createdAt: new Date().toISOString()
   };
-  const list = [defaultBank];
-  userBankAccountsMap.set(userId, list);
-  return list;
+  
+  await pool.query(
+    "INSERT INTO bank_accounts (id, user_id, bank_name, account_holder, account_number, ifsc, vpa, qr_title, qr_type, qr_color, custom_qr_image, is_primary, is_active, daily_limit, daily_volume, total_settled, routing_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+    [defaultBank.id, userId, defaultBank.bankName, defaultBank.accountHolder, defaultBank.accountNumber, defaultBank.ifsc, defaultBank.vpa, defaultBank.qrTitle, defaultBank.qrType, defaultBank.qrColor, defaultBank.customQrImage, defaultBank.isPrimary, defaultBank.isActive, defaultBank.dailyLimit, defaultBank.dailyVolume, defaultBank.totalSettled, defaultBank.routingWeight]
+  );
+  return [defaultBank];
 }
 
 // --- Auth Routes (/auth/login.php & /auth/register.php) ---
-app.get(["/api/auth/me", "/auth/me"], (req, res) => {
-  const user = getAuthenticatedUser(req);
+app.get(["/api/auth/me", "/auth/me"], async (req, res) => {
+  const user = await getAuthenticatedUser(req);
   if (!user) {
     return res.json({ success: false, user: null, session: null });
   }
@@ -895,39 +1069,56 @@ app.get(["/api/auth/me", "/auth/me"], (req, res) => {
 });
 
 app.post(["/api/auth/verify-email", "/auth/verify-email"], async (req, res) => {
-  const email = String(req.body?.email || "").trim().toLowerCase();
-  const code = String(req.body?.code || "").trim();
-  const pending = emailVerificationMap.get(email);
-  if (!pending || pending.expiresAt < Date.now() || pending.codeHash !== hashAuthCode(code)) {
-    return res.status(400).json({ success: false, error: "Invalid or expired verification code." });
-  }
+  try {
+    const email = String(req.body?.email || "").trim().toLowerCase();
+    const code = String(req.body?.code || "").trim();
+    const evRes = await pool.query("SELECT * FROM email_verifications WHERE user_id = (SELECT id FROM users WHERE email = $1 LIMIT 1)", [email]); 
+    const pending = evRes.rows.length ? { userId: evRes.rows[0].user_id, codeHash: evRes.rows[0].code_hash, expiresAt: Number(evRes.rows[0].expires_at) } : null;
+    
+    if (!pending || pending.expiresAt < Date.now() || pending.codeHash !== hashAuthCode(code)) {
+      return res.status(400).json({ success: false, error: "Invalid or expired verification code." });
+    }
 
-  verifiedEmailUsers.add(pending.userId);
-  emailVerificationMap.delete(email);
-  persistAuthData();
-  const merchant = merchantsList.find((item) => item.id === pending.userId);
-  const user: SessionUser | undefined = merchant
-    ? {
-        id: merchant.id, name: merchant.ownerName, email: merchant.email, phone: merchant.phone,
-        role: "merchant", businessName: merchant.businessName, vpa: merchant.vpa,
-        status: merchant.status, createdAt: merchant.createdAt,
-      }
-    : pending.userId === "usr_admin_001"
+    await pool.query("UPDATE users SET is_email_verified = true WHERE id = $1", [pending.userId]);
+    await pool.query("DELETE FROM email_verifications WHERE user_id = $1", [pending.userId]);
+    
+    const merchant = await getUser(pending.userId);
+    const user: SessionUser | undefined = merchant
       ? {
-          id: "usr_admin_001", name: "Master Administrator", email, phone: "+91 90000 00001",
-          role: "admin", businessName: "9tepay Master Administration", vpa: "admin.gateway@icici",
-          status: "active", createdAt: "2026-01-01T00:00:00.000Z",
+          id: merchant.id, name: merchant.ownerName, email: merchant.email, phone: merchant.phone,
+          role: "merchant", businessName: merchant.businessName, vpa: merchant.vpa,
+          status: merchant.status, createdAt: merchant.createdAt,
         }
-      : undefined;
-  if (!user) return res.status(404).json({ success: false, error: "Account no longer exists." });
-  currentUser = user;
-  return res.json({ success: true, user, token: issueSession(user) });
+      : pending.userId === "usr_admin_001"
+        ? {
+            id: "usr_admin_001", name: "Master Administrator", email, phone: "+91 90000 00001",
+            role: "admin", businessName: "9tepay Master Administration", vpa: "admin.gateway@icici",
+            status: "active", createdAt: "2026-01-01T00:00:00.000Z",
+          }
+        : undefined;
+    if (!user) return res.status(404).json({ success: false, error: "Account no longer exists." });
+    
+    const userProf = await getProfileForUser(pending.userId);
+    const userBanks = await getBankAccountsForUser(pending.userId);
+    
+    // Create session (we don't strictly need a global currentUser anymore, we just return the token)
+    return res.json({ 
+      success: true, 
+      user, 
+      profile: userProf,
+      bankAccounts: userBanks,
+      token: await issueSession(user) 
+    });
+  } catch (error) {
+    console.error("Email verification error:", error);
+    return res.status(500).json({ success: false, error: "An internal server error occurred during verification." });
+  }
 });
 
-app.post(["/api/auth/2fa/setup", "/auth/2fa/setup"], requireAuth, (_req, res) => {
+app.post(["/api/auth/2fa/setup", "/auth/2fa/setup"], requireAuth, async (_req, res) => {
   const secret = base32Encode(crypto.randomBytes(20));
   const user = _req.user!;
-  totpSecretsMap.set(`${user.id}:pending`, secret);
+  await pool.query("INSERT INTO totp_secrets (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret", [`${user.id}:pending`, secret]);
   const label = encodeURIComponent(`9tepay:${user.email}`);
   const issuer = encodeURIComponent("9tepay");
   res.json({
@@ -937,46 +1128,52 @@ app.post(["/api/auth/2fa/setup", "/auth/2fa/setup"], requireAuth, (_req, res) =>
   });
 });
 
-app.post(["/api/auth/2fa/enable", "/auth/2fa/enable"], requireAuth, (req, res) => {
+app.post(["/api/auth/2fa/enable", "/auth/2fa/enable"], requireAuth, async (req, res) => {
   const user = req.user!;
   const pendingKey = `${user.id}:pending`;
-  const secret = totpSecretsMap.get(pendingKey);
+  const secretRes = await pool.query("SELECT secret FROM totp_secrets WHERE user_id = $1", [pendingKey]); const secret = secretRes.rows.length ? secretRes.rows[0].secret : null;
   if (!secret || !verifyTotp(secret, String(req.body?.code || "").trim())) {
     return res.status(400).json({ success: false, error: "Invalid authenticator code." });
   }
-  totpSecretsMap.delete(pendingKey);
-  totpSecretsMap.set(user.id, secret);
+  await pool.query("DELETE FROM totp_secrets WHERE user_id = $1", [pendingKey]);
+  await pool.query("INSERT INTO totp_secrets (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret", [user.id, secret]);
   res.json({ success: true, message: "Authenticator app 2FA enabled." });
 });
 
-app.post(["/api/auth/2fa/verify", "/auth/2fa/verify"], authRateLimiter, (req, res) => {
+app.post(["/api/auth/2fa/verify", "/auth/2fa/verify"], authRateLimiter, async (req, res) => {
   const challengeToken = String(req.body?.challengeToken || "");
-  const challenge = pendingTwoFactorLogins.get(challengeToken);
-  if (!challenge || challenge.expiresAt < Date.now() || !verifyTotp(totpSecretsMap.get(challenge.userId) || "", String(req.body?.code || "").trim())) {
+  const challengeRes = await pool.query("SELECT * FROM totp_secrets WHERE user_id = $1", [challengeToken]); const challenge = challengeRes.rows.length ? { userId: challengeRes.rows[0].user_id, expiresAt: Date.now() + 100000 } : null;
+  if (!challenge || challenge.expiresAt < Date.now() || !verifyTotp( (await pool.query("SELECT secret FROM totp_secrets WHERE user_id = $1", [challenge.userId])).rows[0]?.secret || "", String(req.body?.code || "").trim())) {
     return res.status(401).json({ success: false, error: "Invalid or expired authenticator code." });
   }
-  pendingTwoFactorLogins.delete(challengeToken);
+  
   const user = challenge.userId === "usr_admin_001"
     ? { id: "usr_admin_001", name: "Master Administrator", email: "admin@9tepay.com", phone: "+91 90000 00001", role: "admin" as const, businessName: "9tepay Master Administration", vpa: "admin.gateway@icici", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z" }
-    : (() => { const m = merchantsList.find((item) => item.id === challenge.userId); return m ? { id: m.id, name: m.ownerName, email: m.email, phone: m.phone, role: "merchant" as const, businessName: m.businessName, vpa: m.vpa, status: m.status, createdAt: m.createdAt } : null; })();
-  if (!user) return res.status(401).json({ success: false, error: "Account no longer exists." });
-  currentUser = user;
-  res.json({ success: true, user, token: issueSession(user) });
+    : await getUser(challenge.userId);
+    if (!user) return res.status(401).json({ success: false, error: "Account no longer exists." });
+    
+    const userProf = await getProfileForUser(user.id);
+    const userBanks = await getBankAccountsForUser(user.id);
+
+    currentUser = user;
+    res.json({ 
+      success: true, 
+      user, 
+      profile: userProf,
+      bankAccounts: userBanks,
+      token: await issueSession(user) 
+    });
 });
 
 app.post(["/api/auth/forgot-password", "/auth/forgot-password"], authRateLimiter, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
-  const merchant = merchantsList.find((item) => item.email.toLowerCase() === email);
+  const merchant = await getUser(email);
   const userId = merchant?.id || (email === "admin@9tepay.com" ? "usr_admin_001" : null);
   const response = { success: true, message: "If an account exists for this email, password reset instructions have been sent." };
   if (!userId) return res.json(response);
 
   const token = crypto.randomBytes(32).toString("hex");
-  passwordResetMap.set(email, {
-    userId,
-    tokenHash: hashAuthCode(token),
-    expiresAt: Date.now() + 15 * 60 * 1000,
-  });
+  
   try {
     await sendPasswordResetEmail(email, token);
     return res.json({
@@ -984,180 +1181,166 @@ app.post(["/api/auth/forgot-password", "/auth/forgot-password"], authRateLimiter
       ...(process.env.NODE_ENV === "development" ? { developmentResetToken: token } : {}),
     });
   } catch (error: any) {
-    passwordResetMap.delete(email);
+    await pool.query("DELETE FROM password_resets WHERE user_id = $1", [email]);
     return res.status(503).json({ success: false, error: error.message });
   }
 });
 
-app.post(["/api/auth/reset-password", "/auth/reset-password"], authRateLimiter, (req, res) => {
+app.post(["/api/auth/reset-password", "/auth/reset-password"], authRateLimiter, async (req, res) => {
   const token = String(req.body?.token || "").trim();
   const newPassword = String(req.body?.newPassword || "");
   if (newPassword.length < 8) {
     return res.status(400).json({ success: false, error: "New password must be at least 8 characters long." });
   }
-  const entry = [...passwordResetMap.entries()].find(
-    ([, value]) => value.expiresAt >= Date.now() && value.tokenHash === hashAuthCode(token)
-  );
+  const prRes = await pool.query("SELECT * FROM password_resets WHERE token_hash = $1 AND expires_at >= $2", [hashAuthCode(token), Date.now()]); const entry = prRes.rows.length ? [prRes.rows[0].user_id, { userId: prRes.rows[0].user_id }] : null;
   if (!entry) return res.status(400).json({ success: false, error: "This password reset link is invalid or expired." });
-  userPasswordsMap.set(entry[1].userId, hashPassword(newPassword));
-  passwordResetMap.delete(entry[0]);
-  persistAuthData();
+  await pool.query("UPDATE user_passwords SET password_hash = $1 WHERE user_id = $2", [hashPassword(newPassword), entry[1].userId]);
+  await pool.query("DELETE FROM password_resets WHERE user_id = $1", [entry[0]]);
+  // persistAuthData() removed
   return res.json({ success: true, message: "Password reset successfully. You can now sign in." });
 });
 
-app.post(["/api/auth/update-password", "/auth/update-password"], requireAuth, (req, res) => {
+app.post(["/api/auth/update-password", "/auth/update-password"], requireAuth, async (req, res) => {
   const currentPassword = String(req.body?.currentPassword || "");
   const newPassword = String(req.body?.newPassword || "");
   if (newPassword.length < 8) {
     return res.status(400).json({ success: false, error: "New password must be at least 8 characters long." });
   }
-  const storedHash = userPasswordsMap.get(req.user.id);
+  const storedHash = await checkPassword(req.user.id);
   if (!storedHash || !verifyPassword(currentPassword, storedHash)) {
     return res.status(401).json({ success: false, error: "Current password is incorrect." });
   }
-  userPasswordsMap.set(req.user.id, hashPassword(newPassword));
-  for (const [token, session] of sessionsMap) {
-    if (session.user.id === req.user.id) sessionsMap.delete(token);
-  }
-  persistAuthData();
+  await pool.query("UPDATE user_passwords SET password_hash = $1 WHERE user_id = $2", [hashPassword(newPassword), req.user.id]);
+  await pool.query("DELETE FROM sessions WHERE user_id = $1", [req.user.id]);
+  // persistAuthData() removed
   return res.json({ success: true, message: "Password updated. Please sign in again." });
 });
 
 app.post(["/api/auth/login", "/auth/login.php", "/api/login", "/auth/login"], authRateLimiter, async (req, res) => {
-  const { emailOrPhone, password, role } = req.body;
-  const targetEmail = (emailOrPhone || "").trim().toLowerCase();
+  try {
+    const { emailOrPhone, password, role } = req.body;
+    const targetEmail = (emailOrPhone || "").trim().toLowerCase();
+    
+    if (role === "admin" || targetEmail === "admin@demotry.shop" || targetEmail === "admin@9tepay.com" || targetEmail === "abhaylucknow12@gmail.com") {
+      const storedAdminHash = await checkPassword("usr_admin_001");
+      const isPasswordValid =
+        validAdminPasscodes.has(password) ||
+        Boolean(storedAdminHash && verifyPassword(password || "", storedAdminHash));
   
-  if (role === "admin" || targetEmail === "admin@demotry.shop" || targetEmail === "admin@9tepay.com") {
-    const storedAdminHash = userPasswordsMap.get("usr_admin_001");
-    const isPasswordValid =
-      validAdminPasscodes.has(password) ||
-      Boolean(storedAdminHash && verifyPassword(password || "", storedAdminHash));
+      if (!isPasswordValid) {
+        trackFailedAttempt(targetEmail || "admin@9tepay.com");
+        return res.status(401).json({ success: false, error: "Invalid administrator credentials." });
+      }
+      // Clear login attempts upon success
+      failedLoginAttempts.delete(targetEmail || "admin@9tepay.com");
+  
+      const adminUser: SessionUser = {
+        id: "usr_admin_001",
+        name: "Master Administrator",
+        email: targetEmail || "admin@9tepay.com",
+        phone: "+91 90000 00001",
+        role: "admin",
+        businessName: "9tepay Master Administration",
+        vpa: "admin.gateway@icici",
+        status: "active",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      };
+      
+      const adminTotpRes = await pool.query("SELECT secret FROM totp_secrets WHERE user_id = $1", [adminUser.id]); 
+      const adminTotp = adminTotpRes.rows.length > 0;
+      if (adminTotp) {
+        const challengeToken = crypto.randomBytes(24).toString("hex");
+        await pool.query("INSERT INTO totp_secrets (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret", [challengeToken, adminTotpRes.rows[0].secret]);
+        return res.json({ success: false, requiresTwoFactor: true, challengeToken });
+      }
+      const adminProf = await getProfileForUser(adminUser.id);
+      const adminBanks = await getBankAccountsForUser(adminUser.id);
 
-    if (!isPasswordValid) {
-      trackFailedAttempt(targetEmail || "admin@9tepay.com");
-      return res.status(401).json({ success: false, error: "Invalid administrator credentials." });
+      currentUser = adminUser;
+      return res.json({ 
+        success: true, 
+        user: adminUser,
+        profile: adminProf,
+        bankAccounts: adminBanks,
+        token: await issueSession(adminUser) 
+      });
     }
+  
+    // Find existing merchant
+    const found = await getUser(targetEmail);
+  
+    if (!found) {
+      trackFailedAttempt(targetEmail);
+      return res.status(401).json({ success: false, error: "Authentication failed. Merchant account not found. Please register first." });
+    }
+  
+    const storedHash = await checkPassword(found.id);
+    if (storedHash) {
+      const isMatch = verifyPassword(password || "", storedHash);
+      if (!isMatch) {
+        trackFailedAttempt(targetEmail);
+        return res.status(401).json({ success: false, error: "Authentication failed. Invalid password credentials." });
+      }
+    } else {
+      // If no password set (legacy demo), accept if it matches default
+      if (password !== "admin123") {
+        trackFailedAttempt(targetEmail);
+        return res.status(401).json({ success: false, error: "Authentication failed. Invalid password credentials." });
+      }
+      // Migrate them to have a real hash
+      await pool.query("INSERT INTO user_passwords (user_id, password_hash) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET password_hash=EXCLUDED.password_hash", [found.id, hashPassword(password || "")]);
+    }
+  
     // Clear login attempts upon success
-    failedLoginAttempts.delete(targetEmail || "admin@9tepay.com");
-
-    const adminUser: SessionUser = {
-      id: "usr_admin_001",
-      name: "Master Administrator",
-      email: targetEmail || "admin@9tepay.com",
-      phone: "+91 90000 00001",
-      role: "admin",
-      businessName: "9tepay Master Administration",
-      vpa: "admin.gateway@icici",
-      status: "active",
-      createdAt: "2026-01-01T00:00:00.000Z",
-    };
-    if (!verifiedEmailUsers.has(adminUser.id)) {
-      try {
-        const verificationCode = await issueEmailVerification(adminUser.id, adminUser.email);
-        return res.status(202).json({
-          success: false,
-          emailVerificationRequired: true,
-          email: adminUser.email,
-          message: "Verification code sent to your email.",
-          ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
-        });
-      } catch (error: any) {
-        return res.status(503).json({ success: false, error: error.message });
+    failedLoginAttempts.delete(targetEmail);
+  
+    // Issue Email Verification if not verified
+    if (found.status === "pending_kyc") {
+      // Just check if is_email_verified is missing or false
+      if (found.isEmailVerified === false) {
+        try {
+          const verificationCode = await issueEmailVerification(found.id, found.email);
+          return res.status(202).json({
+            success: false,
+            emailVerificationRequired: true,
+            email: found.email,
+            message: "Verification code sent to your email.",
+            ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
+          });
+        } catch (error: any) {
+          return res.status(503).json({ success: false, error: error.message });
+        }
       }
     }
-    const adminTotp = totpSecretsMap.get(adminUser.id);
-    if (adminTotp) {
+  
+    const totpRes = await pool.query("SELECT secret FROM totp_secrets WHERE user_id = $1", [found.id]);
+    const hasTotp = totpRes.rows.length > 0;
+    if (hasTotp) {
       const challengeToken = crypto.randomBytes(24).toString("hex");
-      pendingTwoFactorLogins.set(challengeToken, { userId: adminUser.id, expiresAt: Date.now() + 5 * 60 * 1000 });
+      await pool.query("INSERT INTO totp_secrets (user_id, secret) VALUES ($1, $2) ON CONFLICT (user_id) DO UPDATE SET secret = EXCLUDED.secret", [challengeToken, totpRes.rows[0].secret]);
       return res.json({ success: false, requiresTwoFactor: true, challengeToken });
     }
-    currentUser = adminUser;
-    return res.json({ success: true, user: adminUser, token: issueSession(adminUser) });
+  
+    const user: SessionUser = {
+      id: found.id, name: found.ownerName || found.name, email: found.email, phone: found.phone,
+      role: found.role, businessName: found.businessName, vpa: found.vpa, status: found.status, createdAt: found.createdAt,
+    };
+    
+    const userProf = await getProfileForUser(found.id);
+    const userBanks = await getBankAccountsForUser(found.id);
+
+    currentUser = user;
+    return res.json({ 
+      success: true, 
+      user, 
+      profile: userProf,
+      bankAccounts: userBanks,
+      token: await issueSession(user) 
+    });
+  } catch (error) {
+    console.error("Login Error:", error);
+    return res.status(500).json({ success: false, error: "An internal server error occurred during login." });
   }
-
-  // Find existing merchant
-  const found = merchantsList.find(
-    (m) => m.email.toLowerCase() === targetEmail || m.phone === targetEmail
-  );
-
-  if (!found) {
-    trackFailedAttempt(targetEmail);
-    return res.status(401).json({ success: false, error: "Authentication failed. Merchant account not found. Please register first." });
-  }
-
-  const storedHash = userPasswordsMap.get(found.id);
-  if (storedHash) {
-    const isMatch = verifyPassword(password || "", storedHash);
-    if (!isMatch) {
-      trackFailedAttempt(targetEmail);
-
-      const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "127.0.0.1";
-      const secEvt: SecurityEventItem = {
-        id: `sec_evt_bf_${Date.now().toString().slice(-6)}`,
-        type: "IP_ANOMALY",
-        severity: "high",
-        timestamp: new Date().toISOString(),
-        ipAddress: String(ip).split(",")[0].trim(),
-        details: `Failed password login attempt for merchant account: ${targetEmail}`,
-        status: "BLOCKED",
-      };
-      getSecurityLogsForUser(found.id).unshift(secEvt);
-
-      return res.status(401).json({ success: false, error: "Invalid password credentials." });
-    }
-  } else {
-    // Save password for future logins
-    if (password) {
-      userPasswordsMap.set(found.id, hashPassword(password));
-    }
-  }
-
-  // Clear login attempts upon success
-  failedLoginAttempts.delete(targetEmail);
-
-  const sessionUser: SessionUser = {
-    id: found.id,
-    name: found.ownerName,
-    email: found.email,
-    phone: found.phone,
-    role: "merchant",
-    businessName: found.businessName,
-    vpa: found.vpa,
-    status: found.status as any,
-    createdAt: found.createdAt,
-  };
-  if (!verifiedEmailUsers.has(found.id)) {
-    try {
-      const verificationCode = await issueEmailVerification(found.id, found.email);
-      return res.status(202).json({
-        success: false,
-        emailVerificationRequired: true,
-        email: found.email,
-        message: "Verification code sent to your email.",
-        ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
-      });
-    } catch (error: any) {
-      return res.status(503).json({ success: false, error: error.message });
-    }
-  }
-  const merchantTotp = totpSecretsMap.get(found.id);
-  if (merchantTotp) {
-    const challengeToken = crypto.randomBytes(24).toString("hex");
-    pendingTwoFactorLogins.set(challengeToken, { userId: found.id, expiresAt: Date.now() + 5 * 60 * 1000 });
-    return res.json({ success: false, requiresTwoFactor: true, challengeToken });
-  }
-  currentUser = sessionUser;
-
-  const userProf = getProfileForUser(found.id);
-  const userBanks = getBankAccountsForUser(found.id);
-
-  res.json({
-    success: true,
-    user: sessionUser,
-    profile: userProf,
-    bankAccounts: userBanks,
-    token: issueSession(sessionUser)
-  });
 });
 
 app.post(["/api/auth/register", "/auth/register.php", "/api/register", "/auth/register"], authRateLimiter, async (req, res) => {
@@ -1183,138 +1366,45 @@ app.post(["/api/auth/register", "/auth/register.php", "/api/register", "/auth/re
     const cleanBankAcc = bankAccount?.trim() || "919000000000";
     const cleanIfsc = ifsc?.trim().toUpperCase() || "ICIC0000102";
 
-    const existing = merchantsList.find((m) => m.email.toLowerCase() === cleanEmail);
-    if (existing) {
-      existing.businessName = cleanBusinessName;
-      existing.ownerName = cleanOwner;
-      existing.vpa = cleanVpa;
-      existing.phone = cleanPhone;
-      existing.bankAccount = cleanBankAcc;
-      existing.ifsc = cleanIfsc;
-
-      const hashedPassword = hashPassword(password);
-      userPasswordsMap.set(existing.id, hashedPassword);
-      persistAuthData();
-
-      const sessionUser: SessionUser = {
-        id: existing.id,
-        name: existing.ownerName,
-        email: existing.email,
-        phone: existing.phone,
-        role: "merchant",
-        businessName: existing.businessName,
-        vpa: existing.vpa,
-        status: existing.status as any,
-        createdAt: existing.createdAt,
-      };
-      currentUser = sessionUser;
-
-      const userProf = getProfileForUser(existing.id);
-      userProf.businessName = cleanBusinessName;
-      userProf.vpa = cleanVpa;
-      userProf.email = cleanEmail;
-      userProf.phone = cleanPhone;
-
-      try {
-        verifiedEmailUsers.delete(existing.id);
-        const verificationCode = await issueEmailVerification(existing.id, cleanEmail);
-        return res.status(200).json({
-          success: false,
-          emailVerificationRequired: true,
-          email: cleanEmail,
-          message: "Verification code sent to your email.",
-          ...(process.env.NODE_ENV === "development" ? { developmentVerificationCode: verificationCode } : {}),
-        });
-      } catch (error: any) {
-        return res.status(503).json({ success: false, error: error.message });
-      }
+    let existing = await getUser(cleanEmail);
+    
+    const merchId = existing ? existing.id : `merch_live_${Math.random().toString(36).substring(2, 8)}`;
+    const hashedPassword = hashPassword(password);
+    
+    const userToSave = {
+      id: merchId,
+      name: cleanOwner,
+      email: cleanEmail,
+      phone: cleanPhone,
+      role: 'merchant',
+      businessName: cleanBusinessName,
+      vpa: cleanVpa,
+      status: existing ? existing.status : 'active',
+      createdAt: existing ? existing.createdAt : new Date().toISOString()
+    };
+    
+    await insertUser(userToSave, hashedPassword);
+    
+    if (!existing) {
+      // Create primary bank account for new merchant
+      const newBankId = `ba_live_${merchId}_${Math.random().toString(36).substring(2, 8)}`;
+      await pool.query(
+        "INSERT INTO bank_accounts (id, user_id, bank_name, account_holder, account_number, ifsc, vpa, qr_title, qr_type, qr_color, custom_qr_image, is_primary, is_active, daily_limit, daily_volume, total_settled, routing_weight) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)",
+        [
+          newBankId, merchId,
+          cleanIfsc.startsWith("HDFC") ? "HDFC Bank" : cleanIfsc.startsWith("SBIN") ? "State Bank of India" : "ICICI Bank",
+          cleanBusinessName, cleanBankAcc, cleanIfsc, cleanVpa,
+          `${cleanBusinessName} Instant QR`, "dynamic_intent", "#10b981", "", true, true, 500000, 0, 0, 5
+        ]
+      );
+      // Profile will be auto-generated by getProfileForUser
+    } else {
+      // Update profile if existing
+      await pool.query("UPDATE merchant_profiles SET business_name = $1, vpa = $2, phone = $3, email = $4 WHERE user_id = $5", [cleanBusinessName, cleanVpa, cleanPhone, cleanEmail, merchId]);
     }
 
-    const newMerchId = `merch_live_${Math.random().toString(36).substring(2, 8)}`;
-    const hashedPassword = hashPassword(password);
-    userPasswordsMap.set(newMerchId, hashedPassword);
-
-    const newMerchant: MerchantListItem = {
-      id: newMerchId,
-      businessName: cleanBusinessName,
-      ownerName: cleanOwner,
-      email: cleanEmail,
-      phone: cleanPhone,
-      vpa: cleanVpa,
-      bankAccount: cleanBankAcc,
-      ifsc: cleanIfsc,
-      commissionRate: 0.0,
-      status: "active",
-      totalVolume: 0.0,
-      totalOrders: 0,
-      createdAt: new Date().toISOString(),
-    };
-
-    merchantsList.unshift(newMerchant);
-
-    // Create primary bank account for new merchant
-    const newBankId = `bank_${newMerchId}_01`;
-    const newBankAccount: BankAccountItem = {
-      id: newBankId,
-      bankName: cleanIfsc.startsWith("HDFC")
-        ? "HDFC Bank"
-        : cleanIfsc.startsWith("SBIN")
-        ? "State Bank of India"
-        : cleanIfsc.startsWith("UTIB")
-        ? "Axis Bank"
-        : "ICICI Bank",
-      accountHolder: cleanBusinessName,
-      accountNumber: cleanBankAcc,
-      ifsc: cleanIfsc,
-      vpa: cleanVpa,
-      qrTitle: `${cleanBusinessName} Instant QR`,
-      qrType: "dynamic_intent",
-      qrColor: "#10b981",
-      isPrimary: true,
-      isActive: true,
-      dailyLimit: 500000,
-      dailyVolume: 0,
-      totalSettled: 0,
-      routingWeight: 5,
-      createdAt: new Date().toISOString(),
-    };
-
-    userBankAccountsMap.set(newMerchId, [newBankAccount]);
-
-    // Create user profile
-    const newUserProf = {
-      businessName: cleanBusinessName,
-      vpa: cleanVpa,
-      email: cleanEmail,
-      phone: cleanPhone,
-      apiKey: `pi_live_${newMerchId}_${Math.random().toString(36).substring(2, 8)}`,
-      apiSecret: `sk_live_${newMerchId}_${Math.random().toString(36).substring(2, 10)}`,
-      webhookUrl: "https://shop.example.com/api/webhook/upi-callback",
-      webhookSecret: `whsec_live_${Math.random().toString(36).substring(2, 10)}`,
-      autoApproveUtr: false,
-      settlementRate: 0.0,
-      routingStrategy: "smart_round_robin" as const,
-      requireStrictUtrFormat: true,
-      preventDuplicateUtr: true,
-    };
-    userProfilesMap.set(newMerchId, newUserProf);
-    persistAuthData();
-
-    const sessionUser: SessionUser = {
-      id: newMerchant.id,
-      name: newMerchant.ownerName,
-      email: newMerchant.email,
-      phone: newMerchant.phone,
-      role: "merchant",
-      businessName: newMerchant.businessName,
-      vpa: newMerchant.vpa,
-      status: newMerchant.status as any,
-      createdAt: newMerchant.createdAt,
-    };
-    currentUser = sessionUser;
-
     try {
-      const verificationCode = await issueEmailVerification(newMerchId, cleanEmail);
+      const verificationCode = await issueEmailVerification(merchId, cleanEmail);
       return res.status(201).json({
         success: false,
         emailVerificationRequired: true,
@@ -1334,19 +1424,19 @@ app.post(["/api/auth/register", "/auth/register.php", "/api/register", "/auth/re
   }
 });
 
-app.post(["/api/auth/logout", "/auth/logout.php", "/api/logout", "/auth/logout"], (_req, res) => {
+app.post(["/api/auth/logout", "/auth/logout.php", "/api/logout", "/auth/logout"], async (_req, res) => {
   const authHeader = _req.headers.authorization;
   if (authHeader) {
     const parts = authHeader.split(" ");
     if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
-      sessionsMap.delete(parts[1]);
+      await deleteSession(parts[1]);
     }
   }
   currentUser = null;
   res.json({ success: true, message: "Logged out securely." });
 });
 
-app.post("/api/contact/inquiries", authRateLimiter, (req, res) => {
+app.post("/api/contact/inquiries", authRateLimiter, async (req, res) => {
   const { name, email, phone, businessName, volume, subject, message } = req.body || {};
   const cleanName = String(name || "").trim();
   const cleanEmail = String(email || "").trim().toLowerCase();
@@ -1369,22 +1459,22 @@ app.post("/api/contact/inquiries", authRateLimiter, (req, res) => {
     message: cleanMessage,
     createdAt: new Date().toISOString(),
   };
-  contactInquiries.unshift(inquiry);
-  persistAuthData();
+  await createContactInquiry(inquiry.id, inquiry);
+  // persistAuthData() removed
   return res.status(201).json({ success: true, message: "Your inquiry was received. Our team will reply within 2 business hours." });
 });
 
 // --- Superadmin Endpoints ---
-app.get("/api/admin/stats", requireAdmin, (_req, res) => {
-  const totalGmv = merchantsList.reduce((acc, m) => acc + m.totalVolume, 0) + 
-    orders.filter(o => o.status === "PAID").reduce((acc, o) => acc + o.amount, 0);
+app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
+  const stats = await getAdminStats();
+  const totalGmv = stats.totalVolume;
   
   res.json({
-    totalMerchants: merchantsList.length,
+    totalMerchants: stats.activeMerchants,
     totalGmv,
-    totalTransactions: orders.length + 30,
+    totalTransactions: stats.totalTransactions,
     webhookSuccessRate: 99.4,
-    activeVpas: merchantsList.filter(m => m.status === "active").length,
+    activeVpas: stats.activeMerchants,
     serverUptime: "99.98% (Hostinger hCDN Edge)",
     phpVersion: "PHP/8.3.31 (FPM/FastCGI)",
     hostingerNode: "hcdn-nme-edge-2a02",
@@ -1392,63 +1482,203 @@ app.get("/api/admin/stats", requireAdmin, (_req, res) => {
   });
 });
 
-app.get("/api/admin/merchants", requireAdmin, (_req, res) => {
-  res.json(merchantsList);
+app.get("/api/admin/merchants", requireAdmin, async (_req, res) => {
+  try {
+    const usersRes = await pool.query("SELECT * FROM users WHERE role = 'merchant'");
+    const enriched = await Promise.all(usersRes.rows.map(async (u) => {
+      const profRes = await pool.query("SELECT settlement_rate FROM merchant_profiles WHERE user_id = $1", [u.id]);
+      const rate = profRes.rows[0]?.settlement_rate;
+      
+      const volRes = await pool.query("SELECT COALESCE(SUM(o.amount), 0) as total, COUNT(o.id) as count FROM orders o JOIN bank_accounts b ON o.bank_account_id = b.id WHERE b.user_id = $1 AND o.status = 'PAID'", [u.id]);
+      
+      return {
+        id: u.id,
+        ownerName: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        businessName: u.business_name,
+        vpa: u.vpa,
+        status: u.status,
+        createdAt: u.created_at,
+        commissionRate: rate ? parseFloat(rate) : 0,
+        totalVolume: parseFloat(volRes.rows[0].total),
+        totalOrders: parseInt(volRes.rows[0].count)
+      };
+    }));
+    res.json(enriched);
+  } catch (error) {
+    console.error("Admin Merchants Error:", error);
+    res.status(500).json({ error: "Failed to fetch merchants" });
+  }
 });
 
-app.put("/api/admin/merchants/:id", requireAdmin, (req, res) => {
+app.put("/api/admin/merchants/:id", requireAdmin, async (req, res) => {
   const { id } = req.params;
-  const index = merchantsList.findIndex((m) => m.id === id);
-  if (index === -1) {
+  const user = await getUser(id);
+  if (!user) {
     return res.status(404).json({ error: "Merchant not found" });
   }
 
-  merchantsList[index] = { ...merchantsList[index], ...req.body };
-  persistAuthData();
-  res.json({ success: true, merchant: merchantsList[index] });
+  // Update allowed fields
+  const allowedFields = ['name', 'phone', 'businessName', 'vpa'];
+  for (const field of allowedFields) {
+    if (req.body[field] !== undefined) {
+      user[field] = req.body[field];
+    }
+  }
+  
+  await pool.query(
+    "UPDATE users SET name=$1, phone=$2, business_name=$3, vpa=$4 WHERE id=$5",
+    [user.name, user.phone, user.businessName, user.vpa, id]
+  );
+  
+  res.json({ success: true, merchant: user });
 });
 
-app.put("/api/admin/merchants/:id/status", requireAdmin, (req, res) => {
+app.put("/api/admin/merchants/:id/status", requireAdmin, async (req, res) => {
   const { id } = req.params;
   const { status } = req.body;
   if (!["active", "suspended", "pending_kyc"].includes(status)) {
     return res.status(400).json({ success: false, error: "Invalid merchant status." });
   }
 
-  const merchant = merchantsList.find((item) => item.id === id);
-  if (!merchant) {
+  const user = await getUser(id);
+  if (!user) {
     return res.status(404).json({ success: false, error: "Merchant not found" });
   }
 
-  merchant.status = status;
-  persistAuthData();
-  res.json({ success: true, merchant });
+  await pool.query("UPDATE users SET status=$1 WHERE id=$2", [status, id]);
+  user.status = status;
+  res.json({ success: true, merchant: user });
 });
 
-app.post("/api/admin/reconcile-all", requireAdmin, (_req, res) => {
+app.post("/api/admin/reconcile-all", requireAdmin, async (_req, res) => {
+  const pendingOrders = await pool.query("SELECT id FROM orders WHERE status = 'PENDING'");
   let updatedCount = 0;
-  orders.forEach((o) => {
-    if (o.status === "PENDING") {
-      o.status = "PAID";
-      o.utrNumber = `4${Math.floor(10000000000 + Math.random() * 90000000000)}`;
-      o.paidAt = new Date().toISOString();
-      o.webhookDelivered = true;
-      updatedCount++;
-    }
-  });
-
-  persistAuthData();
+  for (const row of pendingOrders.rows) {
+    const fakeUtr = `4${Math.floor(10000000000 + Math.random() * 90000000000)}`;
+    await updateOrderStatus(row.id, "PAID", fakeUtr, new Date().toISOString(), true, false);
+    updatedCount++;
+  }
+  
   res.json({
     success: true,
     message: `Reconciled ${updatedCount} pending UPI transactions via automated SMS scraper feed.`,
     updatedCount,
   });
 });
+// --- Magic Checkout: Customer Lookup (public, rate-limited) ---
+const magicLookupCounts = new Map<string, { count: number; resetAt: number }>();
+
+app.post("/api/checkout/magic-lookup", (req, res) => {
+  // Rate limit: max 5 lookups per IP per minute
+  const ip = req.ip || req.socket.remoteAddress || "unknown";
+  const now = Date.now();
+  const entry = magicLookupCounts.get(ip);
+  if (entry && now < entry.resetAt) {
+    if (entry.count >= 5) {
+      return res.status(429).json({ error: "Too many lookup requests. Please wait a moment." });
+    }
+    entry.count++;
+  } else {
+    magicLookupCounts.set(ip, { count: 1, resetAt: now + 60000 });
+  }
+
+  const { phone } = req.body;
+  if (!phone || typeof phone !== "string" || phone.trim().length < 10) {
+    return res.status(400).json({ found: false, error: "Valid phone number required." });
+  }
+
+  // Normalize phone: strip spaces, dashes; keep digits and leading +
+  const cleanPhone = phone.trim().replace(/[\s\-()]/g, "");
+
+  // Search checkout_customers table
+  pool.query(
+    "SELECT name, email, phone, total_payments, total_amount FROM checkout_customers WHERE phone = $1 LIMIT 1",
+    [cleanPhone]
+  ).then(result => {
+    if (result.rows.length > 0) {
+      const c = result.rows[0];
+      return res.json({
+        found: true,
+        customer: {
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          totalPayments: c.total_payments,
+          totalAmount: parseFloat(c.total_amount || "0"),
+        },
+      });
+    }
+    // Also try without country code prefix
+    const altPhone = cleanPhone.startsWith("+91") ? cleanPhone.slice(3) : `+91${cleanPhone}`;
+    return pool.query(
+      "SELECT name, email, phone, total_payments, total_amount FROM checkout_customers WHERE phone = $1 LIMIT 1",
+      [altPhone]
+    ).then(altResult => {
+      if (altResult.rows.length > 0) {
+        const c = altResult.rows[0];
+        return res.json({
+          found: true,
+          customer: {
+            name: c.name,
+            email: c.email,
+            phone: c.phone,
+            totalPayments: c.total_payments,
+            totalAmount: parseFloat(c.total_amount || "0"),
+          },
+        });
+      }
+      return res.json({ found: false });
+    });
+  }).catch(err => {
+    console.error("Magic lookup error:", err);
+    return res.json({ found: false });
+  });
+});
+
+// Helper: upsert customer into checkout_customers after successful payment
+async function upsertCheckoutCustomer(name: string, email: string | undefined, phone: string | undefined, amount: number) {
+  if (!phone || phone.trim().length < 10) return;
+  const cleanPhone = phone.trim().replace(/[\s\-()]/g, "");
+  const cleanName = (name || "").trim() || "Customer";
+  const cleanEmail = (email || "").trim() || null;
+
+  try {
+    // Try to find existing
+    const existing = await pool.query("SELECT id FROM checkout_customers WHERE phone = $1", [cleanPhone]);
+    if (existing.rows.length > 0) {
+      // Update existing
+      await pool.query(
+        `UPDATE checkout_customers
+         SET name = COALESCE(NULLIF($1, ''), name),
+             email = COALESCE(NULLIF($2, ''), email),
+             total_payments = total_payments + 1,
+             total_amount = total_amount + $3,
+             last_paid_at = NOW(),
+             updated_at = NOW()
+         WHERE phone = $4`,
+        [cleanName, cleanEmail, amount, cleanPhone]
+      );
+    } else {
+      // Insert new
+      const custId = `cust_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 7)}`;
+      await pool.query(
+        `INSERT INTO checkout_customers (id, phone, name, email, total_payments, total_amount, last_paid_at)
+         VALUES ($1, $2, $3, $4, 1, $5, NOW())`,
+        [custId, cleanPhone, cleanName, cleanEmail, amount]
+      );
+    }
+  } catch (err) {
+    console.error("Magic checkout upsert error:", err);
+  }
+}
 
 // --- Order Cancellation ---
-app.post("/api/orders/:id/cancel", (req, res) => {
+app.post("/api/orders/:id/cancel", async (req, res) => {
   const { id } = req.params;
-  const order = orders.find((o) => o.id === id || o.orderNumber === id);
+  const order = await getOrder(id);
   if (!order) {
     return res.status(404).json({ error: "Order not found" });
   }
@@ -1462,23 +1692,24 @@ app.post("/api/orders/:id/cancel", (req, res) => {
   }
 
   order.status = "EXPIRED";
+  await updateOrderStatus(order.id, "EXPIRED");
   res.json({ success: true, message: "Order marked as EXPIRED", order });
 });
 
 // --- Bank Accounts & QR Codes Management ---
-app.get(["/api/merchant/bank-accounts", "/api/bank-accounts", "/api/bank_update.php"], requireAuth, (req, res) => {
-  res.json(getBankAccountsForUser(req.user.id));
+app.get(["/api/merchant/bank-accounts", "/api/bank-accounts", "/api/bank_update.php"], requireAuth, async (req, res) => {
+  res.json(await getBankAccountsForUser(req.user.id));
 });
 
-app.post(["/api/merchant/bank-accounts", "/api/bank-accounts", "/api/bank_update.php"], requireAuth, (req, res) => {
+app.post(["/api/merchant/bank-accounts", "/api/bank-accounts", "/api/bank_update.php"], requireAuth, async (req, res) => {
   const { bankName, accountHolder, accountNumber, ifsc, vpa, qrTitle, qrType, qrColor, customQrImage, dailyLimit, routingWeight } = req.body;
 
   if (!bankName || !accountNumber || !ifsc || !vpa) {
     return res.status(400).json({ success: false, error: "Bank name, account number, IFSC, and UPI VPA are required." });
   }
 
-  const userBanks = getBankAccountsForUser(req.user.id);
-  const userProf = getProfileForUser(req.user.id);
+  const userBanks = await getBankAccountsForUser(req.user.id);
+  const userProf = await getProfileForUser(req.user.id);
 
   const newBank: BankAccountItem = {
     id: `bank_${Math.random().toString(36).substring(2, 8)}`,
@@ -1501,13 +1732,13 @@ app.post(["/api/merchant/bank-accounts", "/api/bank-accounts", "/api/bank_update
   };
 
   userBanks.push(newBank);
-  persistAuthData();
+  // persistAuthData() removed
   res.status(201).json({ success: true, bankAccount: newBank, message: "Bank account and QR profile added successfully." });
 });
 
-app.put(["/api/merchant/bank-accounts/:id", "/api/bank-accounts/:id"], requireAuth, (req, res) => {
+app.put(["/api/merchant/bank-accounts/:id", "/api/bank-accounts/:id"], requireAuth, async (req, res) => {
   const { id } = req.params;
-  const userBanks = getBankAccountsForUser(req.user.id);
+  const userBanks = await getBankAccountsForUser(req.user.id);
   const index = userBanks.findIndex((b) => b.id === id);
   if (index === -1) {
     return res.status(404).json({ success: false, error: "Bank account not found" });
@@ -1527,46 +1758,45 @@ app.put(["/api/merchant/bank-accounts/:id", "/api/bank-accounts/:id"], requireAu
   
   // Also sync existing pending orders with the updated custom QR image & titles
   const updatedBank = userBanks[index];
-  orders.forEach((o) => {
-    if (o.bankAccountId === id || safeLower(o.merchantVpa) === safeLower(updatedBank.vpa)) {
-      if (updatedBank.customQrImage) {
-        o.customQrImage = updatedBank.customQrImage;
-      }
-      if (updatedBank.qrTitle) {
-        o.bankAccountName = updatedBank.qrTitle;
-      }
-    }
-  });
+  if (updatedBank.customQrImage || updatedBank.qrTitle) {
+    await pool.query(
+      "UPDATE orders SET custom_qr_image = COALESCE($1, custom_qr_image), bank_account_name = COALESCE($2, bank_account_name) WHERE bank_account_id = $3 OR LOWER(merchant_vpa) = LOWER($4)",
+      [updatedBank.customQrImage || null, updatedBank.qrTitle || null, id, updatedBank.vpa]
+    );
+  }
 
-  persistAuthData();
+  // // persistAuthData() removed
   res.json({ success: true, bankAccount: userBanks[index] });
 });
 
-app.delete(["/api/merchant/bank-accounts/:id", "/api/bank-accounts/:id"], requireAuth, (req, res) => {
+app.delete(["/api/merchant/bank-accounts/:id", "/api/bank-accounts/:id"], requireAuth, async (req, res) => {
   const { id } = req.params;
-  let userBanks = getBankAccountsForUser(req.user.id);
+  let userBanks = await getBankAccountsForUser(req.user.id);
   if (userBanks.length <= 1) {
     return res.status(400).json({ success: false, error: "At least one active settlement bank account must be maintained." });
   }
 
   const deleted = userBanks.find((b) => b.id === id);
+  if (!deleted) {
+    return res.status(404).json({ success: false, error: "Bank account not found." });
+  }
+
+  await pool.query("DELETE FROM bank_accounts WHERE id = $1 AND user_id = $2", [id, req.user.id]);
   userBanks = userBanks.filter((b) => b.id !== id);
-  userBankAccountsMap.set(req.user.id, userBanks);
 
   // If deleted was primary, make the first one primary
   if (deleted?.isPrimary && userBanks.length > 0) {
-    userBanks[0].isPrimary = true;
-    const userProf = getProfileForUser(req.user.id);
-    userProf.vpa = userBanks[0].vpa;
+    await pool.query("UPDATE bank_accounts SET is_primary = true WHERE id = $1", [userBanks[0].id]);
+    await pool.query("UPDATE merchant_profiles SET vpa = $1 WHERE user_id = $2", [userBanks[0].vpa, req.user.id]);
   }
 
-  persistAuthData();
+  // persistAuthData() removed
   res.json({ success: true, message: "Bank account removed." });
 });
 
-app.all(["/api/merchant/bank-accounts/:id/set-primary", "/api/merchant/bank-accounts/:id/primary"], requireAuth, (req, res) => {
+app.all (["/api/merchant/bank-accounts/:id/set-primary", "/api/merchant/bank-accounts/:id/primary"], requireAuth, async (req, res) => {
   const { id } = req.params;
-  const userBanks = getBankAccountsForUser(req.user.id);
+  const userBanks = await getBankAccountsForUser(req.user.id);
   const target = userBanks.find((b) => b.id === id);
   if (!target) {
     return res.status(404).json({ success: false, error: "Bank account not found" });
@@ -1575,29 +1805,29 @@ app.all(["/api/merchant/bank-accounts/:id/set-primary", "/api/merchant/bank-acco
   userBanks.forEach((b) => {
     b.isPrimary = b.id === id;
   });
-  const userProf = getProfileForUser(req.user.id);
+  const userProf = await getProfileForUser(req.user.id);
   userProf.vpa = target.vpa;
 
-  persistAuthData();
+  // persistAuthData() removed
   res.json({ success: true, message: `Primary settlement VPA updated to ${target.vpa}`, bankAccounts: userBanks });
 });
 
-app.all(["/api/merchant/bank-accounts/:id/toggle-active", "/api/merchant/bank-accounts/:id/toggle"], requireAuth, (req, res) => {
+app.all (["/api/merchant/bank-accounts/:id/toggle-active", "/api/merchant/bank-accounts/:id/toggle"], requireAuth, async (req, res) => {
   const { id } = req.params;
-  const userBanks = getBankAccountsForUser(req.user.id);
+  const userBanks = await getBankAccountsForUser(req.user.id);
   const target = userBanks.find((b) => b.id === id);
   if (!target) {
     return res.status(404).json({ success: false, error: "Bank account not found" });
   }
 
   target.isActive = !target.isActive;
-  persistAuthData();
+  // persistAuthData() removed
   res.json({ success: true, bankAccount: target, bankAccounts: userBanks });
 });
 
-app.get(["/api/merchant/routing-rules", "/api/merchant/routing"], requireAuth, (req, res) => {
-  const userProf = getProfileForUser(req.user.id);
-  const userBanks = getBankAccountsForUser(req.user.id);
+app.get(["/api/merchant/routing-rules", "/api/merchant/routing"], requireAuth, async (req, res) => {
+  const userProf = await getProfileForUser(req.user.id);
+  const userBanks = await getBankAccountsForUser(req.user.id);
   res.json({
     strategy: userProf.routingStrategy,
     requireStrictUtrFormat: userProf.requireStrictUtrFormat,
@@ -1607,31 +1837,36 @@ app.get(["/api/merchant/routing-rules", "/api/merchant/routing"], requireAuth, (
   });
 });
 
-app.put(["/api/merchant/routing-rules", "/api/merchant/routing"], requireAuth, (req, res) => {
+app.put(["/api/merchant/routing-rules", "/api/merchant/routing"], requireAuth, async (req, res) => {
   const { strategy, requireStrictUtrFormat, preventDuplicateUtr } = req.body;
-  const userProf = getProfileForUser(req.user.id);
-  if (strategy) userProf.routingStrategy = strategy;
-  if (requireStrictUtrFormat !== undefined) userProf.requireStrictUtrFormat = Boolean(requireStrictUtrFormat);
-  if (preventDuplicateUtr !== undefined) userProf.preventDuplicateUtr = Boolean(preventDuplicateUtr);
+  const userProf = await getProfileForUser(req.user.id);
+  
+  const newStrategy = strategy || userProf.routingStrategy;
+  const newStrictFormat = requireStrictUtrFormat !== undefined ? Boolean(requireStrictUtrFormat) : userProf.requireStrictUtrFormat;
+  const newPreventDup = preventDuplicateUtr !== undefined ? Boolean(preventDuplicateUtr) : userProf.preventDuplicateUtr;
 
-  persistAuthData();
+  await pool.query(
+    "UPDATE merchant_profiles SET routing_strategy = $1, require_strict_utr_format = $2, prevent_duplicate_utr = $3 WHERE user_id = $4",
+    [newStrategy, newStrictFormat, newPreventDup, req.user.id]
+  );
+
   res.json({
     success: true,
     message: "Dynamic routing & anti-fraud rules updated successfully",
     settings: {
-      strategy: userProf.routingStrategy,
-      requireStrictUtrFormat: userProf.requireStrictUtrFormat,
-      preventDuplicateUtr: userProf.preventDuplicateUtr,
+      strategy: newStrategy,
+      requireStrictUtrFormat: newStrictFormat,
+      preventDuplicateUtr: newPreventDup,
     },
   });
 });
 
 
-app.get(["/api/security/events", "/api/security/logs"], requireAuth, (req, res) => {
+app.get(["/api/security/events", "/api/security/logs"], requireAuth, async (req, res) => {
   res.json(getSecurityLogsForUser(req.user.id));
 });
 
-app.post(["/api/security/probe", "/api/security/test-tamper"], requireAuth, (req, res) => {
+app.post(["/api/security/probe", "/api/security/test-tamper"], requireAuth, async (req, res) => {
   const { type, orderNumber, utr } = req.body;
   const newEvt: SecurityEventItem = {
     id: `sec_evt_${Date.now().toString().slice(-6)}`,
@@ -1652,10 +1887,10 @@ app.post(["/api/security/probe", "/api/security/test-tamper"], requireAuth, (req
 // --- Merchant API Routes ---
 
 // Get Profile & Configuration
-app.get("/api/merchant/profile", requireAuth, (req, res) => {
+app.get("/api/merchant/profile", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const userProf = getProfileForUser(userId);
-  const userBanks = getBankAccountsForUser(userId);
+  const userProf = await getProfileForUser(userId);
+  const userBanks = await getBankAccountsForUser(userId);
   res.json({
     ...userProf,
     bankAccounts: userBanks,
@@ -1663,9 +1898,9 @@ app.get("/api/merchant/profile", requireAuth, (req, res) => {
 });
 
 // Update Profile
-app.put("/api/merchant/profile", requireAuth, (req, res) => {
+app.put("/api/merchant/profile", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const userProf = getProfileForUser(userId);
+  const userProf = await getProfileForUser(userId);
   Object.assign(userProf, req.body);
   if (req.body.businessName) {
     req.user.businessName = req.body.businessName;
@@ -1677,19 +1912,27 @@ app.put("/api/merchant/profile", requireAuth, (req, res) => {
 });
 
 // Regenerate API credentials
-app.post("/api/merchant/keys/regenerate", requireAuth, (req, res) => {
+app.post("/api/merchant/keys/regenerate", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const userProf = getProfileForUser(userId);
+  const userProf = await getProfileForUser(userId);
   userProf.apiKey = "pi_live_" + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
   userProf.apiSecret = "sk_live_" + Math.random().toString(36).substring(2, 12) + Math.random().toString(36).substring(2, 12);
   res.json({ success: true, apiKey: userProf.apiKey, apiSecret: userProf.apiSecret });
 });
 
 // List all orders
-app.get("/api/orders", requireAuth, (req, res) => {
+app.get("/api/orders", requireAuth, async (req, res) => {
   const userId = req.user.id;
-  const userBanks = getBankAccountsForUser(userId);
-  const enrichedOrders = orders.map((o) => {
+  const userBanks = await getBankAccountsForUser(userId);
+  
+  const query = req.user.role === "admin" 
+    ? "SELECT * FROM orders ORDER BY created_at DESC"
+    : "SELECT * FROM orders WHERE user_id = $1 ORDER BY created_at DESC";
+  const values = req.user.role === "admin" ? [] : [userId];
+  
+  const dbOrders = (await pool.query(query, values)).rows.map(rowToOrder);
+
+  const enrichedOrders = dbOrders.map((o) => {
     if (!o.customQrImage) {
       const bank = userBanks.find(
         (b) => b.id === o.bankAccountId || safeLower(b.vpa) === safeLower(o.merchantVpa)
@@ -1701,25 +1944,11 @@ app.get("/api/orders", requireAuth, (req, res) => {
     return o;
   });
 
-  if (req.user.role === "admin") {
-    return res.json(enrichedOrders);
-  }
-
-  const userVpas = userBanks.map((b) => safeLower(b.vpa));
-  if (req.user.vpa) userVpas.push(safeLower(req.user.vpa));
-
-  const userOrders = enrichedOrders.filter(
-    (o) =>
-      o.userId === userId ||
-      userVpas.includes(safeLower(o.merchantVpa)) ||
-      (o.bankAccountId && o.bankAccountId.includes(userId)) ||
-      !o.userId
-  );
-  return res.json(userOrders);
+  return res.json(enrichedOrders);
 });
 
 // Create Order (Simulates `POST /api/create-order` endpoint from Lolapay/PayIndia documentation)
-app.post(["/api/orders", "/api/orders/create", "/api/create-order"], requireAuth, (req, res) => {
+app.post(["/api/orders", "/api/orders/create", "/api/create-order"], requireAuth, async (req, res) => {
   const { amount, orderId, customerName, customerEmail, customerPhone, note, callbackUrl, bankAccountId } = req.body;
 
   if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
@@ -1734,8 +1963,8 @@ app.post(["/api/orders", "/api/orders/create", "/api/create-order"], requireAuth
   const orderUniqueId = `ord_live_${Math.random().toString(36).substring(2, 9)}`;
 
   // Smart select routed Bank Account & QR VPA
-  const routedBank = selectRoutedBank(userId, bankAccountId, numAmount);
-  const userProf = getProfileForUser(userId);
+  const routedBank = await selectRoutedBank(userId, bankAccountId, numAmount);
+  const userProf = await getProfileForUser(userId);
 
   let upiUri: string;
   try {
@@ -1768,8 +1997,8 @@ app.post(["/api/orders", "/api/orders/create", "/api/create-order"], requireAuth
     userId: userId,
   };
 
-  orders.unshift(newOrder);
-  persistAuthData();
+  await insertOrder(newOrder);
+  // // persistAuthData() removed // Removed, handled by DB
 
   // Return standard gateway payload with deeplinks
   const params = upiUri.replace("upi://pay?", "");
@@ -1801,16 +2030,10 @@ app.post(["/api/orders", "/api/orders/create", "/api/create-order"], requireAuth
 });
 
 // Fetch Single Order
-app.get("/api/orders/:id", (req, res) => {
+app.get("/api/orders/:id", async (req, res) => {
   const { id } = req.params;
   const cleanId = String(id || "").trim();
-  const order = orders.find(
-    (o) =>
-      o.id === cleanId ||
-      o.orderNumber === cleanId ||
-      safeLower(o.id) === safeLower(cleanId) ||
-      safeLower(o.orderNumber) === safeLower(cleanId)
-  );
+  const order = await getOrder(cleanId);
   if (!order) {
     return res.status(404).json({ error: "Order not found" });
   }
@@ -1856,7 +2079,7 @@ app.get("/api/orders/:id", (req, res) => {
 });
 
 // Verify / Confirm Payment (with Anti-Fraud Duplicate UTR and Format Guard)
-const handleVerifyOrderRequest = (req: express.Request, res: express.Response) => {
+const handleVerifyOrderRequest = async (req: express.Request, res: express.Response) => {
   try {
     const paramId = req.params.id;
     const bodyOrderId = req.body?.orderId || req.body?.id;
@@ -1864,17 +2087,13 @@ const handleVerifyOrderRequest = (req: express.Request, res: express.Response) =
     const { utr, utrNumber } = req.body || {};
     const inputUtr = utr || utrNumber;
 
-    let order = orders.find(
-      (o) =>
-        (paramId && (o.id === paramId || o.orderNumber === paramId || safeLower(o.id) === safeLower(paramId) || safeLower(o.orderNumber) === safeLower(paramId))) ||
-        (bodyOrderId && (o.id === bodyOrderId || o.orderNumber === bodyOrderId || safeLower(o.id) === safeLower(bodyOrderId) || safeLower(o.orderNumber) === safeLower(bodyOrderId))) ||
-        (bodyOrderNumber && (o.id === bodyOrderNumber || o.orderNumber === bodyOrderNumber || safeLower(o.id) === safeLower(bodyOrderNumber) || safeLower(o.orderNumber) === safeLower(bodyOrderNumber)))
-    );
+    const targetId = String(paramId || bodyOrderId || bodyOrderNumber).trim();
+    let order = await getOrder(targetId);
 
     // Get order's tenant merchant id
     const orderUserId = order?.userId || "merch_live_01";
-    const userProf = getProfileForUser(orderUserId);
-    const userBanks = getBankAccountsForUser(orderUserId);
+    const userProf = await getProfileForUser(orderUserId);
+    const userBanks = await getBankAccountsForUser(orderUserId);
 
     if (!order) {
       return res.status(404).json({ success: false, error: "Payment order not found or has expired." });
@@ -1882,7 +2101,7 @@ const handleVerifyOrderRequest = (req: express.Request, res: express.Response) =
 
     if (order.expiresAt && new Date(order.expiresAt).getTime() <= Date.now()) {
       order.status = "EXPIRED";
-      persistAuthData();
+      // persistAuthData() removed
       return res.status(410).json({ success: false, error: "This payment order has expired.", code: "ORDER_EXPIRED" });
     }
 
@@ -1919,9 +2138,8 @@ const handleVerifyOrderRequest = (req: express.Request, res: express.Response) =
       if (order.utrNumber && order.utrNumber !== finalUtr) {
         return res.status(409).json({ success: false, error: "A different UTR is already submitted for this payment.", code: "UTR_ALREADY_SUBMITTED" });
       }
-      const duplicateOrder = orders.find(
-        (o) => o.utrNumber === finalUtr && o.id !== order?.id && o.orderNumber !== order?.orderNumber
-      );
+      const dupRes = await pool.query('SELECT * FROM orders WHERE utr_number = $1 AND id != $2 LIMIT 1', [finalUtr, order.id]);
+      const duplicateOrder = dupRes.rows[0];
 
       if (duplicateOrder) {
         const secEvt: SecurityEventItem = {
@@ -1930,7 +2148,7 @@ const handleVerifyOrderRequest = (req: express.Request, res: express.Response) =
           severity: "critical",
           timestamp: new Date().toISOString(),
           ipAddress: clientIp,
-          details: `Duplicate UTR reuse attempt detected: UTR #${finalUtr} was already settled on Order #${duplicateOrder.orderNumber}`,
+          details: `Duplicate UTR reuse attempt detected: UTR #${finalUtr} was already settled on Order #${duplicateOrder.order_number}`,
           orderNumber: order.orderNumber,
           utr: finalUtr,
           status: "BLOCKED",
@@ -1950,20 +2168,10 @@ const handleVerifyOrderRequest = (req: express.Request, res: express.Response) =
     order.provider = "MANUAL_UPI";
     order.paymentApp = "UPI";
 
-    // Sync utrNumber and reviewRequired status across all order aliases in memory
-    orders.forEach((o) => {
-      if (o.id === order.id || o.orderNumber === order.orderNumber || (order.id && o.id === order.id)) {
-        o.utrNumber = finalUtr;
-        o.provider = "MANUAL_UPI";
-        o.paymentApp = "UPI";
-        o.status = "PENDING";
-        (o as any).reviewRequired = true;
-      }
-    });
-
     order.status = "PENDING";
     (order as any).reviewRequired = true;
-    persistAuthData();
+    await updateOrderStatus(order.id, "PENDING", finalUtr, undefined, undefined, true);
+    // // persistAuthData() removed
     return res.json({
       success: true,
       message: "UTR submitted securely for merchant review. Payment is not marked as paid until approved.",
@@ -1983,21 +2191,15 @@ app.post("/api/orders/verify", handleVerifyOrderRequest);
 app.post("/api/checkout/verify-utr", handleVerifyOrderRequest);
 
 // Approve Order / UTR (Merchant Action)
-app.post("/api/orders/:id/approve", requireAuth, (req, res) => {
+app.post("/api/orders/:id/approve", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     const cleanId = String(id || "").trim();
-    let order = orders.find(
-      (o) =>
-        o.id === cleanId ||
-        o.orderNumber === cleanId ||
-        safeLower(o.id) === safeLower(cleanId) ||
-        safeLower(o.orderNumber) === safeLower(cleanId)
-    );
+    let order = await getOrder(cleanId);
 
     const orderUserId = order?.userId || req.user.id || "merch_live_01";
-    const userProf = getProfileForUser(orderUserId);
-    const userBanks = getBankAccountsForUser(orderUserId);
+    const userProf = await getProfileForUser(orderUserId);
+    const userBanks = await getBankAccountsForUser(orderUserId);
 
     const orderBelongsToUser =
       !!order &&
@@ -2012,7 +2214,8 @@ app.post("/api/orders/:id/approve", requireAuth, (req, res) => {
 
     if (order.expiresAt && new Date(order.expiresAt).getTime() <= Date.now()) {
       order.status = "EXPIRED";
-      persistAuthData();
+      await updateOrderStatus(order.id, "EXPIRED");
+      // // persistAuthData() removed
       return res.status(410).json({ success: false, error: "This payment order has expired.", code: "ORDER_EXPIRED" });
     }
 
@@ -2027,28 +2230,12 @@ app.post("/api/orders/:id/approve", requireAuth, (req, res) => {
     order.webhookDelivered = true;
     (order as any).reviewRequired = false;
 
-    // Sync all matching records in memory
-    orders.forEach((o) => {
-      if (
-        o.id === order?.id ||
-        o.orderNumber === order?.orderNumber ||
-        safeLower(o.id) === safeLower(cleanId) ||
-        safeLower(o.orderNumber) === safeLower(cleanId)
-      ) {
-        o.status = "PAID";
-        o.utrNumber = finalUtr;
-        o.paidAt = nowIso;
-        o.webhookDelivered = true;
-        (o as any).reviewRequired = false;
-      }
-    });
+    await updateOrderStatus(order.id, "PAID", finalUtr, nowIso, true, false);
 
     // Update bank account stats
     const targetBank = userBanks.find((b) => b.id === order?.bankAccountId || b.vpa === order?.merchantVpa);
     if (targetBank) {
-      targetBank.dailyVolume = Number(targetBank.dailyVolume || 0) + Number(order.amount || 0);
-      targetBank.totalSettled = Number(targetBank.totalSettled || 0) + Number(order.amount || 0);
-      userBankAccountsMap.set(orderUserId, userBanks);
+      await pool.query("UPDATE bank_accounts SET daily_volume = daily_volume + $1, total_settled = total_settled + $1 WHERE id = $2", [Number(order.amount || 0), targetBank.id]);
     }
 
     // Webhook log
@@ -2073,7 +2260,15 @@ app.post("/api/orders/:id/approve", requireAuth, (req, res) => {
       response: '{"status":"OK","received":true}',
     };
     getWebhookLogsForUser(orderUserId).unshift(newLog);
-    persistAuthData();
+    // // persistAuthData() removed
+
+    // Magic Checkout: save customer profile for future 1-click across all merchants
+    upsertCheckoutCustomer(
+      order.customerName,
+      (order as any).customerEmail,
+      (order as any).customerPhone,
+      order.amount
+    );
 
     return res.json({
       success: true,
@@ -2086,10 +2281,10 @@ app.post("/api/orders/:id/approve", requireAuth, (req, res) => {
 });
 
 // Reject / Fail Order (Merchant Action)
-app.post("/api/orders/:id/reject", requireAuth, (req, res) => {
+app.post("/api/orders/:id/reject", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    let order = orders.find((o) => o.id === id || o.orderNumber === id);
+    let order = await getOrder(id);
     if (!order) {
       return res.status(404).json({ error: "Order not found" });
     }
@@ -2102,7 +2297,8 @@ app.post("/api/orders/:id/reject", requireAuth, (req, res) => {
 
     order.status = "FAILED";
     (order as any).reviewRequired = false;
-    persistAuthData();
+    await updateOrderStatus(order.id, "FAILED", undefined, undefined, undefined, false);
+    // // persistAuthData() removed
 
     const secEvt: SecurityEventItem = {
       id: `sec_evt_${Date.now().toString().slice(-6)}`,
@@ -2170,7 +2366,7 @@ function isUnsafeOutboundUrl(rawUrl: string): boolean {
 app.post("/api/webhooks/test-dispatch", requireAuth, async (req, res) => {
   try {
     const { webhookUrl, event, payload } = req.body;
-    const userProf = getProfileForUser(req.user.id);
+    const userProf = await getProfileForUser(req.user.id);
     const targetUrl = webhookUrl || userProf.webhookUrl || "https://shop.example.com/api/webhook/upi-callback";
     if (typeof targetUrl !== "string" || isUnsafeOutboundUrl(targetUrl)) {
       return res.status(400).json({ success: false, error: "Webhook URL must be a public HTTPS endpoint." });

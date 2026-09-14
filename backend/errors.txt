@@ -1,0 +1,33 @@
+server.ts(4,18): error TS2307: Cannot find module 'cors' or its corresponding type declarations.
+server.ts(8,26): error TS2307: Cannot find module 'otpauth' or its corresponding type declarations.
+server.ts(9,20): error TS2307: Cannot find module 'qrcode' or its corresponding type declarations.
+server.ts(777,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(795,18): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(844,18): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(934,3): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(951,3): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(952,3): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1007,3): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1474,12): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1484,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1485,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1514,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1551,19): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1563,22): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1573,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1582,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1591,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1603,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1604,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1616,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1661,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1662,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1672,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1686,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1695,21): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1741,22): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1742,20): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1880,22): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(1881,23): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(2003,22): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.
+server.ts(2004,23): error TS1308: 'await' expressions are only allowed within async functions and at the top levels of modules.

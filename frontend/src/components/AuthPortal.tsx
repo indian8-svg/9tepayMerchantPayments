@@ -136,8 +136,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
   const handleLogin = async (e?: React.FormEvent, customCredentials?: { email: string; passcode?: string; role?: 'merchant' | 'admin' }) => {
     if (e) e.preventDefault();
-    const loginConfirmed = window.confirm('Are you sure you want to sign in to 9tepay?');
-    if (!loginConfirmed) return;
+    
     setIsLoading(true);
     setErrorMsg('');
     setSuccessMsg('');
@@ -157,11 +156,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
       if (res.ok && res.data?.success && res.data.user) {
         if (res.data.token) {
-          if (rememberMe || payload.role === 'admin') {
-            localStorage.setItem('9tepay_session_token', res.data.token);
-          } else {
-            sessionStorage.setItem('9tepay_session_token', res.data.token);
-          }
+          if (rememberMe || payload.role === 'admin') { localStorage.setItem('9tepay_session_token', res.data.token); sessionStorage.removeItem('9tepay_session_token'); } else { sessionStorage.setItem('9tepay_session_token', res.data.token); localStorage.removeItem('9tepay_session_token'); }
         }
         saveRegisteredUserToLocalMap(res.data.user);
         setSuccessMsg(`Welcome back, ${res.data.user.name}!`);
@@ -233,11 +228,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
 
       if (res.ok && res.data?.success && res.data.user) {
         if (res.data.token) {
-          if (rememberMe) {
-            localStorage.setItem('9tepay_session_token', res.data.token);
-          } else {
-            sessionStorage.setItem('9tepay_session_token', res.data.token);
-          }
+          if (rememberMe) { localStorage.setItem('9tepay_session_token', res.data.token); sessionStorage.removeItem('9tepay_session_token'); } else { sessionStorage.setItem('9tepay_session_token', res.data.token); localStorage.removeItem('9tepay_session_token'); }
         }
         saveRegisteredUserToLocalMap(res.data.user);
         setSuccessMsg('Account registered successfully! Direct UPI settlement activated.');
@@ -275,8 +266,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         body: JSON.stringify({ email: verificationEmail, code: verificationCode }),
       });
       if (res.ok && res.data?.success && res.data.user && res.data.token) {
-        sessionStorage.setItem('9tepay_session_token', res.data.token);
-        saveRegisteredUserToLocalMap(res.data.user);
+        sessionStorage.setItem('9tepay_session_token', res.data.token); localStorage.removeItem('9tepay_session_token');(res.data.user);
         onLoginSuccess(res.data.user);
       } else {
         setErrorMsg(formatErrorMessage(res.data?.error || res.error, 'Verification failed.'));
@@ -298,8 +288,7 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         body: JSON.stringify({ challengeToken: twoFactorChallenge, code: twoFactorCode }),
       });
       if (res.ok && res.data?.success && res.data.user && res.data.token) {
-        sessionStorage.setItem('9tepay_session_token', res.data.token);
-        saveRegisteredUserToLocalMap(res.data.user);
+        sessionStorage.setItem('9tepay_session_token', res.data.token); localStorage.removeItem('9tepay_session_token');(res.data.user);
         onLoginSuccess(res.data.user);
       } else {
         setErrorMsg(formatErrorMessage(res.data?.error || res.error, 'Two-factor verification failed.'));
@@ -363,34 +352,34 @@ export const AuthPortal: React.FC<AuthPortalProps> = ({
         {/* Left Form Card */}
         <div className={`${authMode === 'admin' ? 'border-blue-200 shadow-blue-100/40' : 'border-slate-200'} md:col-span-7 bg-white border rounded-2xl p-5 sm:p-7 shadow-sm`}>
           {/* Mode Switcher */}
-          <div className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-4 mb-6">
+          <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch gap-2 border-b border-slate-100 pb-4 mb-6">
             <button
               onClick={() => { setAuthMode('login'); setErrorMsg(''); }}
-              className={`flex-1 min-w-[130px] py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 authMode === 'login'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
               }`}
             >
-              <UserCheck className="w-4 h-4" />
-              <span>Merchant Sign In</span>
+              <UserCheck className="w-4 h-4 shrink-0" />
+              <span className="whitespace-nowrap">Merchant Sign In</span>
             </button>
 
             <button
               onClick={() => { setAuthMode('register'); setErrorMsg(''); }}
-              className={`flex-1 min-w-[110px] py-2.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 cursor-pointer ${
                 authMode === 'register'
                   ? 'bg-blue-600 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'
               }`}
             >
-              <Building className="w-4 h-4" />
-              <span>Register</span>
+              <Building className="w-4 h-4 shrink-0" />
+              <span className="whitespace-nowrap">Register</span>
             </button>
 
             <button
               onClick={() => { setAuthMode('admin'); setErrorMsg(''); }}
-              className={`flex-1 min-w-[90px] py-2.5 px-3.5 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+              className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 authMode === 'admin'
                   ? 'bg-slate-900 text-white shadow-sm'
                   : 'bg-slate-100 text-slate-600 hover:text-slate-900 hover:bg-slate-200/80'

@@ -25,6 +25,7 @@ import {
   Share2,
   Loader2,
   Info,
+  UserCircle2,
 } from 'lucide-react';
 import { Order, BankAccountQR, User } from '../types';
 import { generateAppDeeplinks, formatCurrency } from '../utils/upi';
@@ -82,6 +83,49 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
   const [isAwaitingApproval, setIsAwaitingApproval] = useState<boolean>(
     Boolean(initialOrder.utrNumber && initialOrder.status !== 'PAID')
   );
+
+  // --- Magic Checkout (1-Click returning customer) ---
+  const [magicPhone, setMagicPhone] = useState('');
+  const [magicCustomer, setMagicCustomer] = useState<{
+    name: string; email: string; phone: string; totalPayments: number; totalAmount: number;
+  } | null>(null);
+  const [isMagicLooking, setIsMagicLooking] = useState(false);
+  const [magicMode, setMagicMode] = useState<'active' | 'skipped' | 'found' | 'not_found'>(
+    // If merchant already filled customer details, skip magic bar
+    initialOrder.customerPhone ? 'skipped' : 'active'
+  );
+  const [magicError, setMagicError] = useState('');
+
+  const handleMagicLookup = async () => {
+    const cleanPhone = magicPhone.trim().replace(/[\s\-()]/g, '');
+    if (cleanPhone.length < 10) {
+      setMagicError('Please enter a valid 10+ digit phone number.');
+      return;
+    }
+    setIsMagicLooking(true);
+    setMagicError('');
+    try {
+      const res = await safeFetch<{
+        found: boolean;
+        customer?: { name: string; email: string; phone: string; totalPayments: number; totalAmount: number };
+        error?: string;
+      }>('/api/checkout/magic-lookup', {
+        method: 'POST',
+        body: JSON.stringify({ phone: cleanPhone }),
+      });
+      if (res.data?.found && res.data.customer) {
+        setMagicCustomer(res.data.customer);
+        setMagicMode('found');
+      } else {
+        setMagicMode('not_found');
+      }
+    } catch {
+      setMagicError('Unable to look up. Please proceed normally.');
+      setMagicMode('not_found');
+    } finally {
+      setIsMagicLooking(false);
+    }
+  };
 
   // Background status polling (checks every 1s for instant merchant approval)
   useEffect(() => {
@@ -452,7 +496,7 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
           utr: cleanUtr,
           orderId: order.id,
           amount: order.amount,
-          customerName: order.customerName,
+          customerName: magicCustomer?.name || order.customerName,
         }),
       });
 
@@ -578,7 +622,7 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Customer Name:</span>
-              <span className="text-slate-900">{order.customerName}</span>
+              <span className="text-slate-900">{magicCustomer?.name || order.customerName}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Merchant VPA:</span>
@@ -621,6 +665,121 @@ export const HostedCheckout: React.FC<HostedCheckoutProps> = ({
               </span>
             </div>
           </div>
+
+          {/* ⚡ Magic Checkout: 1-Click Returning Customer */}
+          {magicMode === 'active' && (
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50/50 border border-blue-200 rounded-2xl p-4 sm:p-5 shadow-xs">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-blue-100 text-blue-600 border border-blue-200 shrink-0">
+                  <Zap className="w-5 h-5" />
+                </div>
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
+                      <span>⚡ 1-Click Magic Checkout</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">
+                        Free
+                      </span>
+                    </h4>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      Paid via any 9tepay merchant before? Enter your phone to auto-fill your details instantly.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="relative flex-1">
+                      <Smartphone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                      <input
+                        type="tel"
+                        value={magicPhone}
+                        onChange={(e) => setMagicPhone(e.target.value.replace(/[^\d+\s\-()]/g, '').slice(0, 15))}
+                        onKeyDown={(e) => e.key === 'Enter' && handleMagicLookup()}
+                        placeholder="+91 98765 43210"
+                        className="w-full bg-white border border-blue-200 text-slate-900 text-sm rounded-xl pl-10 pr-4 py-2.5 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-all placeholder:text-slate-400 font-mono"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleMagicLookup}
+                      disabled={isMagicLooking || magicPhone.trim().length < 10}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-xs disabled:opacity-50 shrink-0"
+                    >
+                      {isMagicLooking ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Zap className="w-3.5 h-3.5" />
+                      )}
+                      <span className="hidden sm:inline">{isMagicLooking ? 'Looking up...' : 'Quick Fill'}</span>
+                      <span className="sm:hidden">{isMagicLooking ? '...' : 'Fill'}</span>
+                    </button>
+                  </div>
+                  {magicError && (
+                    <p className="text-xs text-rose-600 font-medium flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" /> {magicError}
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setMagicMode('skipped')}
+                    className="text-[11px] text-slate-500 hover:text-blue-600 font-medium underline underline-offset-2 cursor-pointer"
+                  >
+                    I'm a new customer — skip this
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Magic Checkout: Welcome Back Banner */}
+          {magicMode === 'found' && magicCustomer && (
+            <div className="bg-gradient-to-r from-emerald-50 to-teal-50/50 border border-emerald-200 rounded-2xl p-4 sm:p-5 shadow-xs">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-full bg-emerald-100 border-2 border-emerald-300 flex items-center justify-center text-emerald-700 shrink-0">
+                  <UserCircle2 className="w-6 h-6" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h4 className="text-sm font-bold text-slate-900">
+                      Welcome back, {magicCustomer.name}! 👋
+                    </h4>
+                    <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 border border-blue-200 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3" />
+                      {magicCustomer.totalPayments === 1
+                        ? '2nd payment on 9tepay'
+                        : `${magicCustomer.totalPayments + 1}${['st','nd','rd'][magicCustomer.totalPayments] || 'th'} payment on 9tepay`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-600 mt-0.5 truncate">
+                    {magicCustomer.email || magicCustomer.phone} — Your details have been auto-filled below.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setMagicMode('active'); setMagicCustomer(null); }}
+                  className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer shrink-0"
+                  title="Use a different account"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Magic Checkout: Not Found Message */}
+          {magicMode === 'not_found' && (
+            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 flex items-center justify-between shadow-xs">
+              <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
+                <Info className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span>No saved profile found for that phone. Continue as a new customer — your details will be saved after payment!</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMagicMode('skipped')}
+                className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 underline underline-offset-2 cursor-pointer shrink-0 ml-2"
+              >
+                Got it
+              </button>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left Column: QR Code & Intent Deeplink Actions */}

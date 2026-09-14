@@ -28,6 +28,7 @@ import { safeFetch, fetchJson, api } from './utils/api';
 import { MerchantDashboard } from './components/MerchantDashboard';
 import { PaymentLinksManager } from './components/PaymentLinksManager';
 import { HostedCheckout } from './components/HostedCheckout';
+import { PublicInvoice } from './components/PublicInvoice';
 import { DeveloperApiDocs } from './components/DeveloperApiDocs';
 import { AdminDashboard } from './components/AdminDashboard';
 import { AuthPortal } from './components/AuthPortal';
@@ -170,10 +171,13 @@ export function App() {
   }, []);
 
   const [activeView, setActiveView] = useState<
-    'dashboard' | 'payment_links' | 'checkout' | 'admin' | 'auth' | 'docs' | 'profile' | 'settings' | 'about' | 'contact'
+    'dashboard' | 'payment_links' | 'checkout' | 'invoice' | 'admin' | 'auth' | 'docs' | 'profile' | 'settings' | 'about' | 'contact'
   >(() => {
     if (initialUrlOrderId) {
       return 'checkout';
+    }
+    if (window.location.pathname.startsWith('/pay-invoice/')) {
+      return 'invoice';
     }
     try {
       const saved = localStorage.getItem('9tepay_user');
@@ -637,15 +641,37 @@ export function App() {
   };
 
   const handleViewChange = (
-    newView: 'dashboard' | 'payment_links' | 'checkout' | 'admin' | 'auth' | 'docs' | 'profile' | 'settings' | 'about' | 'contact'
+    newView: 'dashboard' | 'payment_links' | 'checkout' | 'admin' | 'auth' | 'docs' | 'profile' | 'settings' | 'about' | 'contact' | 'invoice'
   ) => {
-    setActiveView(newView);
+    setActiveView(newView as any);
     if (newView !== 'checkout' && window.history && window.history.pushState) {
       if (window.location.pathname.startsWith('/checkout/')) {
-        window.history.pushState(null, '', '/');
+        window.history.pushState(null, '', '/#' + newView);
+      } else {
+        window.history.pushState({ view: newView }, '', '/#' + newView);
       }
     }
   };
+
+  React.useEffect(() => {
+    const handlePopState = (e: PopStateEvent) => {
+      let view = e.state?.view;
+      if (!view) {
+        const hash = window.location.hash.replace('#', '');
+        view = hash || (currentUser ? 'dashboard' : 'about');
+      }
+      
+      // Prevent going back to the login page if already logged in
+      if (currentUser && ['auth', 'about', 'login'].includes(view)) {
+        window.history.replaceState({ view: currentUser.role === 'admin' ? 'admin' : 'dashboard' }, '', '/#' + (currentUser.role === 'admin' ? 'admin' : 'dashboard'));
+        setActiveView(currentUser.role === 'admin' ? 'admin' : 'dashboard');
+      } else if (['dashboard', 'payment_links', 'checkout', 'invoice', 'admin', 'auth', 'docs', 'profile', 'settings', 'about', 'contact'].includes(view)) {
+        setActiveView(view as any);
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [currentUser]);
 
   const handleLogoClick = () => {
     setActiveView('about');
@@ -1063,7 +1089,7 @@ export function App() {
   };
 
   const handleLogout = async () => {
-    if (!window.confirm('Are you sure you want to log out of 9tepay?')) return;
+    
     try {
       localStorage.removeItem('9tepay_user');
       localStorage.removeItem('9tepay_session_token');
@@ -1077,7 +1103,7 @@ export function App() {
   };
 
   // Safe view resolution based on authentication state
-  const isPublicCheckout = activeView === 'checkout';
+  const isPublicCheckout = activeView === 'checkout' || activeView === 'invoice';
   const publicViews = new Set(['about', 'contact', 'auth']);
   const effectiveView = !currentUser && !isPublicCheckout && !publicViews.has(activeView) ? 'about' : activeView;
 
@@ -1108,7 +1134,7 @@ export function App() {
         </div>
       )}
       {/* Top Header Navbar - Hidden in Standalone Checkout Mode */}
-      {effectiveView !== 'checkout' && (
+      {effectiveView !== 'checkout' && effectiveView !== 'invoice' && (
         <header className="border-b border-slate-200/90 bg-white/95 backdrop-blur-md sticky top-0 z-40 shadow-xs">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -1463,7 +1489,9 @@ export function App() {
             <ContactPage
               onBackToDashboard={() => handleViewChange('auth')}
             />
-          ) : isPublicCheckout ? (
+          ) : activeView === 'invoice' ? (
+            <PublicInvoice />
+          ) : activeView === 'checkout' ? (
             isLoadingCheckout ? (
               <div className="flex flex-col items-center justify-center min-h-[400px] space-y-4">
                 <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
@@ -1502,6 +1530,11 @@ export function App() {
         ) : (
           /* When logged in: Render selected authenticated view */
           <>
+            {/* VIEW: Public Invoice inside authenticated (in case they view their own) */}
+            {effectiveView === 'invoice' && (
+              <PublicInvoice />
+            )}
+
             {/* VIEW 1: Superadmin Control Panel (Accessible ONLY when role === 'admin') */}
             {effectiveView === 'admin' && currentUser.role === 'admin' && (
               <AdminDashboard

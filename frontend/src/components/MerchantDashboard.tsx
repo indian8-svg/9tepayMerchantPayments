@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   DollarSign,
   TrendingUp,
@@ -28,7 +28,7 @@ import {
   ShieldAlert,
   UserCheck,
   Eye,
-  EyeOff,
+  EyeOff, FileText, Repeat, Route,
 } from 'lucide-react';
 import {
   AreaChart,
@@ -48,6 +48,9 @@ import { BankAccountsManager } from './BankAccountsManager';
 import { SecurityCenterPanel } from './SecurityCenterPanel';
 import { TransactionsManager } from './TransactionsManager';
 import { CustomersManager } from './CustomersManager';
+import { InvoicesManager } from './InvoicesManager';
+import { SubscriptionsManager } from './SubscriptionsManager';
+import { SplitPaymentsManager } from './SplitPaymentsManager';
 import { QRCodeSVG } from 'qrcode.react';
 
 interface MerchantDashboardProps {
@@ -95,7 +98,33 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
   onRegenerateKeys,
   onTriggerTestWebhook,
 }) => {
-  const [activeTab, setActiveTab] = useState<'transactions' | 'customers' | 'orders' | 'banks' | 'security' | 'analytics' | 'api' | 'webhooks' | 'settings'>('transactions');
+  type TabType = 'transactions' | 'customers' | 'invoices' | 'subscriptions' | 'routing' | 'orders' | 'banks' | 'security' | 'analytics' | 'api' | 'webhooks' | 'settings';
+  
+  const [activeTab, setActiveTab] = useState<TabType>(() => {
+    const hash = window.location.hash.replace('#', '') as TabType;
+    const validTabs = ['transactions', 'customers', 'invoices', 'subscriptions', 'routing', 'orders', 'banks', 'security', 'analytics', 'api', 'webhooks', 'settings'];
+    return validTabs.includes(hash) ? hash : 'transactions';
+  });
+
+  useEffect(() => {
+    if (window.location.hash.replace('#', '') !== activeTab) {
+      window.history.pushState(null, '', `#${activeTab}`);
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const hash = window.location.hash.replace('#', '') as TabType;
+      const validTabs = ['transactions', 'customers', 'invoices', 'subscriptions', 'routing', 'orders', 'banks', 'security', 'analytics', 'api', 'webhooks', 'settings'];
+      if (validTabs.includes(hash)) {
+        setActiveTab(hash);
+      } else {
+        setActiveTab('transactions');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
   const [orderFilter, setOrderFilter] = useState<'ALL' | 'PAID' | 'PENDING' | 'EXPIRED'>('ALL');
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
@@ -435,6 +464,39 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
             <UserCheck className="w-3.5 h-3.5" />
             <span>Customers</span>
           </button>
+            <button
+              onClick={() => setActiveTab('invoices')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'invoices'
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <FileText className="w-3.5 h-3.5" />
+              <span>Invoices</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('subscriptions')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'subscriptions'
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Repeat className="w-3.5 h-3.5" />
+              <span>Subscriptions</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('routing')}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'routing'
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+            >
+              <Route className="w-3.5 h-3.5" />
+              <span>Routing Rules</span>
+            </button>
           <button
             onClick={() => setActiveTab('orders')}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
@@ -536,6 +598,15 @@ export const MerchantDashboard: React.FC<MerchantDashboardProps> = ({
       {activeTab === 'customers' && (
         <CustomersManager orders={orders} />
       )}
+        {activeTab === 'invoices' && (
+          <InvoicesManager />
+        )}
+        {activeTab === 'subscriptions' && (
+          <SubscriptionsManager />
+        )}
+        {activeTab === 'routing' && (
+          <SplitPaymentsManager />
+        )}
 
       {/* TAB 2: Multiple Bank Accounts & QR Fleet */}
       {activeTab === 'banks' && (

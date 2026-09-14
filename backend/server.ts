@@ -1342,6 +1342,35 @@ app.post(["/api/auth/login", "/auth/login.php", "/api/login", "/auth/login"], au
   }
 });
 
+async function sendPasswordResetEmail(email: string, token: string): Promise<void> {
+  const resetUrl = `${process.env.APP_URL || "http://localhost:3000"}/?resetToken=${encodeURIComponent(token)}`;
+  if (!process.env.SMTP_PASSWORD || !process.env.SMTP_FROM) {
+    if (process.env.NODE_ENV === "development") {
+      console.warn(`[development] Password reset link for ${email}: ${resetUrl}`);
+      return;
+    }
+    throw new Error("Password reset email is not configured. Set SMTP_PASSWORD and SMTP_FROM in the server environment.");
+  }
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${process.env.SMTP_PASSWORD}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      from: process.env.SMTP_FROM,
+      to: email,
+      subject: "Reset your 9tepay password",
+      text: `Use this secure link to reset your 9tepay password:\n\n${resetUrl}\n\nThis link expires in 15 minutes and can only be used once. If you did not request this, ignore this email.`
+    })
+  });
+  if (!res.ok) {
+    const error = await res.text();
+    console.error("Resend API error:", error);
+    throw new Error("Failed to send password reset email: " + error);
+  }
+}
+
 app.post(["/api/auth/register", "/auth/register.php", "/api/register", "/auth/register"], authRateLimiter, async (req, res) => {
   try {
     const { businessName, ownerName, email, phone, vpa, bankAccount, ifsc, password, termsAccepted } = req.body || {};
